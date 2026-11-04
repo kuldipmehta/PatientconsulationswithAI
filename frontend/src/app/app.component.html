@@ -1,0 +1,902 @@
+<div class="app-wrapper">
+  <!-- Top Navigation Header -->
+  <header class="app-header">
+    <div class="container header-content">
+      <div class="brand">
+        <div class="brand-icon">🏥</div>
+        <div class="brand-text">
+          <div class="brand-title">CareSync Patient Management</div>
+          <div class="brand-subtitle">.NET 10 • SQL Server • Azure Blob • Gemini AI</div>
+        </div>
+      </div>
+
+      <!-- Navigation Tabs -->
+      <nav class="nav-tabs">
+        <button 
+          class="nav-tab" 
+          [class.active]="activeTab === 'patients'" 
+          (click)="activeTab = 'patients'">
+          👥 Patients
+        </button>
+        <button 
+          class="nav-tab" 
+          [class.active]="activeTab === 'consultations'" 
+          (click)="activeTab = 'consultations'">
+          🩺 Consultations
+        </button>
+        <button 
+          class="nav-tab nav-tab-ai" 
+          [class.active]="activeTab === 'ai'" 
+          (click)="activeTab = 'ai'">
+          ✨ AI Clinical Agent
+        </button>
+        <button 
+          class="nav-tab" 
+          [class.active]="activeTab === 'emails'" 
+          (click)="activeTab = 'emails'">
+          ✉️ Email Logs
+        </button>
+        <button 
+          class="nav-tab" 
+          [class.active]="activeTab === 'settings'" 
+          (click)="activeTab = 'settings'">
+          ⚙️ Settings
+        </button>
+      </nav>
+
+      <!-- Right Header Actions -->
+      <div class="header-actions">
+        <div 
+          class="status-pill" 
+          [class.status-online]="isBackendConnected" 
+          [class.status-offline]="!isBackendConnected"
+          (click)="checkConnection()"
+          [title]="isBackendConnected ? 'Backend API connected' : 'Click to retry connection'">
+          <span class="status-dot"></span>
+          <span>{{ isBackendConnected ? 'API Connected' : 'Connecting...' }}</span>
+        </div>
+        <button class="btn btn-primary" (click)="openCreatePatientModal()">
+          <span>+ Add Patient</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Global Alert Banner -->
+  <div class="container" *ngIf="alertMessage">
+    <div class="alert" [class]="'alert-' + alertType">
+      <div class="alert-content">
+        <span class="alert-icon" *ngIf="alertType === 'success'">✅</span>
+        <span class="alert-icon" *ngIf="alertType === 'danger'">⚠️</span>
+        <span class="alert-icon" *ngIf="alertType === 'warning'">⚡</span>
+        <span class="alert-icon" *ngIf="alertType === 'info'">ℹ️</span>
+        <span>{{ alertMessage }}</span>
+      </div>
+      <button class="alert-close" (click)="alertMessage = null">&times;</button>
+    </div>
+  </div>
+
+  <!-- Main Content Area -->
+  <main class="container main-content">
+
+    <!-- ============================================================ -->
+    <!-- TAB 1: PATIENTS                                              -->
+    <!-- ============================================================ -->
+    <section *ngIf="activeTab === 'patients'" class="tab-pane">
+      <div class="pane-header">
+        <div>
+          <h2>Patient Registry</h2>
+          <p class="subtitle">Search, view, manage patients and profile pictures in Azure Blob Storage</p>
+        </div>
+        <button class="btn btn-primary" (click)="openCreatePatientModal()">
+          <span>+ New Patient</span>
+        </button>
+      </div>
+
+      <!-- Filters & Search -->
+      <div class="filter-card">
+        <div class="filter-row">
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input 
+              type="text" 
+              class="form-control search-input" 
+              placeholder="Search by patient name or email..." 
+              [(ngModel)]="searchTerm" 
+              (keyup.enter)="onSearch()" />
+          </div>
+          <div class="filter-group">
+            <select class="form-select" [(ngModel)]="selectedGender" (change)="onSearch()">
+              <option value="">All Genders</option>
+              <option value="Female">Female</option>
+              <option value="Male">Male</option>
+              <option value="Other">Other</option>
+            </select>
+            <button class="btn btn-secondary" (click)="onSearch()">
+              <span>Filter</span>
+            </button>
+            <button class="btn btn-secondary" (click)="searchTerm = ''; selectedGender = ''; onSearch()">
+              <span>Reset</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Loading State -->
+      <div *ngIf="loadingPatients" class="loading-state">
+        <div class="spinner"></div>
+        <p>Loading patient records from SQL Server...</p>
+      </div>
+
+      <!-- Patient Grid / Table -->
+      <div *ngIf="!loadingPatients && patientsPaged" class="card table-card">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Patient</th>
+              <th>Age / Gender</th>
+              <th>Contact Details</th>
+              <th>Visits</th>
+              <th>Registration Date</th>
+              <th style="text-align: right;">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr *ngFor="let p of patientsPaged.items">
+              <td>
+                <div class="patient-cell">
+                  <div class="avatar-wrapper">
+                    <img *ngIf="p.pictureUrl" [src]="p.pictureUrl" [alt]="p.fullName" class="avatar-img" />
+                    <div *ngIf="!p.pictureUrl" class="avatar-placeholder">
+                      {{ p.firstName.charAt(0) }}{{ p.lastName.charAt(0) }}
+                    </div>
+                  </div>
+                  <div>
+                    <div class="patient-name">{{ p.fullName }}</div>
+                    <div class="patient-id">ID: #{{ p.id }}</div>
+                  </div>
+                </div>
+              </td>
+              <td>
+                <div class="patient-demographics">
+                  <span class="badge badge-secondary">{{ p.age }} yrs</span>
+                  <span class="badge" [class.badge-purple]="p.gender === 'Female'" [class.badge-primary]="p.gender === 'Male'">
+                    {{ p.gender }}
+                  </span>
+                </div>
+              </td>
+              <td>
+                <div class="contact-info">
+                  <div class="contact-email">{{ p.email }}</div>
+                  <div class="contact-phone" *ngIf="p.phoneNumber">{{ p.phoneNumber }}</div>
+                </div>
+              </td>
+              <td>
+                <span class="badge" [class.badge-success]="p.consultationCount > 0" [class.badge-secondary]="p.consultationCount === 0">
+                  🩺 {{ p.consultationCount }} Consultation(s)
+                </span>
+              </td>
+              <td>
+                <span class="text-muted">{{ p.createdAt | date:'MMM d, y' }}</span>
+              </td>
+              <td style="text-align: right;">
+                <div class="action-buttons">
+                  <button class="btn btn-purple btn-sm" (click)="quickSummarizePatient(p.id)" title="AI Live Database Assessment">
+                    <span>✨ AI Summary</span>
+                  </button>
+                  <button class="btn btn-secondary btn-sm" (click)="viewPatientDetail(p.id)" title="View Details & Consultations">
+                    <span>View</span>
+                  </button>
+                  <button class="btn btn-secondary btn-sm" (click)="openEditPatientModal(p)" title="Edit Patient Details">
+                    <span>Edit</span>
+                  </button>
+                  <button class="btn btn-danger btn-sm" (click)="deletePatient(p.id, p.fullName)" title="Delete Patient">
+                    <span>Delete</span>
+                  </button>
+                </div>
+              </td>
+            </tr>
+            <tr *ngIf="patientsPaged.items.length === 0">
+              <td colspan="6" class="empty-state">
+                <p>No patients found matching your search criteria.</p>
+                <button class="btn btn-primary btn-sm" (click)="openCreatePatientModal()">Register New Patient</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <!-- Pagination Controls -->
+        <div class="pagination-bar" *ngIf="patientsPaged.totalPages > 1">
+          <div class="pagination-info">
+            Showing page {{ patientsPaged.pageNumber }} of {{ patientsPaged.totalPages }} (Total: {{ patientsPaged.totalCount }} patients)
+          </div>
+          <div class="pagination-buttons">
+            <button 
+              class="btn btn-secondary btn-sm" 
+              [disabled]="!patientsPaged.hasPreviousPage" 
+              (click)="changePage(currentPage - 1)">
+              Previous
+            </button>
+            <span class="page-current">{{ currentPage }}</span>
+            <button 
+              class="btn btn-secondary btn-sm" 
+              [disabled]="!patientsPaged.hasNextPage" 
+              (click)="changePage(currentPage + 1)">
+              Next
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- TAB 2: CONSULTATIONS                                         -->
+    <!-- ============================================================ -->
+    <section *ngIf="activeTab === 'consultations'" class="tab-pane">
+      <div class="pane-header">
+        <div>
+          <h2>Consultations Management</h2>
+          <p class="subtitle">Doctor consultations, diagnoses, symptoms, treatments and prescriptions</p>
+        </div>
+        <button class="btn btn-primary" (click)="openCreateConsultationModal()">
+          <span>+ Schedule Consultation</span>
+        </button>
+      </div>
+
+      <div *ngIf="loadingConsultations" class="loading-state">
+        <div class="spinner"></div>
+        <p>Loading consultations...</p>
+      </div>
+
+      <div *ngIf="!loadingConsultations" class="consultations-grid">
+        <div *ngFor="let c of consultations" class="card consultation-card">
+          <div class="consultation-card-header">
+            <div>
+              <span class="badge" 
+                [class.badge-success]="c.status === 'Completed'" 
+                [class.badge-warning]="c.status === 'Scheduled'" 
+                [class.badge-danger]="c.status === 'Cancelled'"
+                [class.badge-purple]="c.status === 'FollowUpRequired'">
+                {{ c.status }}
+              </span>
+              <span class="text-muted text-sm ml-2">{{ c.consultationDate | date:'MMM d, y' }}</span>
+            </div>
+            <div class="consultation-fee">${{ c.fee | number:'1.2-2' }}</div>
+          </div>
+
+          <h3 class="consultation-diagnosis">{{ c.diagnosis }}</h3>
+          
+          <div class="consultation-meta">
+            <div><strong>Patient:</strong> {{ c.patientName }} (#{{ c.patientId }})</div>
+            <div><strong>Doctor:</strong> {{ c.doctorName }}</div>
+          </div>
+
+          <div class="consultation-details" *ngIf="c.symptoms || c.treatmentPlan || c.prescription">
+            <div *ngIf="c.symptoms" class="detail-row">
+              <span class="detail-label">Symptoms:</span> {{ c.symptoms }}
+            </div>
+            <div *ngIf="c.treatmentPlan" class="detail-row">
+              <span class="detail-label">Plan:</span> {{ c.treatmentPlan }}
+            </div>
+            <div *ngIf="c.prescription" class="detail-row">
+              <span class="detail-label">Rx:</span> <span class="rx-pill">{{ c.prescription }}</span>
+            </div>
+          </div>
+
+          <div class="consultation-card-footer">
+            <button class="btn btn-secondary btn-sm" (click)="openEditConsultationModal(c)">Edit</button>
+            <button class="btn btn-danger btn-sm" (click)="deleteConsultation(c.id)">Delete</button>
+          </div>
+        </div>
+
+        <div *ngIf="consultations.length === 0" class="empty-state card" style="grid-column: 1 / -1;">
+          <p>No consultations recorded in SQL Server yet.</p>
+          <button class="btn btn-primary" (click)="openCreateConsultationModal()">Schedule First Consultation</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- TAB 3: AI CLINICAL AGENT                                     -->
+    <!-- ============================================================ -->
+    <section *ngIf="activeTab === 'ai'" class="tab-pane">
+      <div class="pane-header">
+        <div>
+          <h2>✨ Clinical AI Assistant</h2>
+          <p class="subtitle">Powered by Google Gemini with live grounding on your SQL Server patient database</p>
+        </div>
+        <div class="ai-badge-group">
+          <span class="badge badge-purple">Engine: Google Gemini</span>
+          <span class="badge badge-primary">Model: {{ aiModelOverride }}</span>
+        </div>
+      </div>
+
+      <!-- AI Sub Tabs -->
+      <div class="subtabs-bar">
+        <button 
+          class="subtab-btn" 
+          [class.active]="aiSubTab === 'summary'" 
+          (click)="aiSubTab = 'summary'">
+          📋 Live Database Clinical Summary
+        </button>
+        <button 
+          class="subtab-btn" 
+          [class.active]="aiSubTab === 'chat'" 
+          (click)="aiSubTab = 'chat'">
+          💬 Autonomous AI Agent Chat
+        </button>
+        <button 
+          class="subtab-btn" 
+          [class.active]="aiSubTab === 'triage'" 
+          (click)="aiSubTab = 'triage'">
+          🚨 Symptom Triage & Urgency
+        </button>
+      </div>
+
+      <!-- SUBTAB A: LIVE SUMMARY -->
+      <div *ngIf="aiSubTab === 'summary'" class="ai-tab-content">
+        <div class="card ai-card">
+          <div class="ai-card-header">
+            <h3>Synthesize Patient Record from SQL Server</h3>
+            <p class="text-muted text-sm">
+              The AI Agent retrieves the real patient profile and all past doctor visits via EF Core and synthesizes a live assessment.
+            </p>
+          </div>
+
+          <div class="ai-form-grid">
+            <div class="form-group">
+              <label class="form-label">Select Patient from Database:</label>
+              <select class="form-select" [(ngModel)]="summaryPatientId">
+                <option *ngFor="let p of patientsPaged?.items" [value]="p.id">
+                  #{{ p.id }} - {{ p.fullName }} ({{ p.age }}yo, {{ p.consultationCount }} consultations)
+                </option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">Doctor's Custom Instructions (Optional):</label>
+              <input 
+                type="text" 
+                class="form-control" 
+                [(ngModel)]="summaryCustomPrompt" 
+                placeholder="e.g. Focus on cardiovascular risk and medication compliance" />
+            </div>
+          </div>
+
+          <div class="ai-card-actions">
+            <button class="btn btn-purple" [disabled]="generatingSummary" (click)="runLiveSummary()">
+              <span *ngIf="!generatingSummary">✨ Generate Live Assessment</span>
+              <span *ngIf="generatingSummary">⚡ Synthesizing with Gemini...</span>
+            </button>
+          </div>
+
+          <!-- Live Result Card -->
+          <div *ngIf="liveSummaryResult" class="ai-result-box">
+            <div class="ai-result-header">
+              <div>
+                <h4>Live Clinical Assessment: {{ liveSummaryResult.patientName }}</h4>
+                <div class="text-sm text-muted">
+                  Grounded on {{ liveSummaryResult.totalConsultationsFetchedFromDb }} consultation(s) fetched from SQL Server • Model: {{ liveSummaryResult.modelUsed }}
+                </div>
+              </div>
+              <span class="badge" 
+                [class.badge-success]="liveSummaryResult.urgencyAssessment === 'Routine'"
+                [class.badge-warning]="liveSummaryResult.urgencyAssessment === 'Moderate'"
+                [class.badge-danger]="liveSummaryResult.urgencyAssessment === 'Urgent'">
+                Urgency: {{ liveSummaryResult.urgencyAssessment }}
+              </span>
+            </div>
+
+            <div class="ai-result-section">
+              <h5>📝 Clinical Summary</h5>
+              <p class="ai-summary-text">{{ liveSummaryResult.aiGeneratedSummary }}</p>
+            </div>
+
+            <div class="ai-result-columns">
+              <div class="ai-result-col" *ngIf="liveSummaryResult.aiIdentifiedRisks.length > 0">
+                <h5>⚠️ Identified Clinical Risks</h5>
+                <ul class="risk-list">
+                  <li *ngFor="let r of liveSummaryResult.aiIdentifiedRisks">{{ r }}</li>
+                </ul>
+              </div>
+
+              <div class="ai-result-col" *ngIf="liveSummaryResult.aiRecommendedActions.length > 0">
+                <h5>💡 Recommended Action Items</h5>
+                <ul class="action-list">
+                  <li *ngFor="let a of liveSummaryResult.aiRecommendedActions">{{ a }}</li>
+                </ul>
+              </div>
+            </div>
+
+            <!-- Database Grounding Proof -->
+            <details class="db-proof-details">
+              <summary>🔍 Verify Live SQL Server Records Sent to Gemini</summary>
+              <pre class="db-json">{{ liveSummaryResult.liveDatabaseDataUsed | json }}</pre>
+            </details>
+          </div>
+        </div>
+      </div>
+
+      <!-- SUBTAB B: AUTONOMOUS CHAT -->
+      <div *ngIf="aiSubTab === 'chat'" class="ai-tab-content">
+        <div class="card chat-card">
+          <div class="chat-header">
+            <div>
+              <h3>Autonomous Database Clinical Agent</h3>
+              <p class="text-sm text-muted">Ask questions, search patients, or schedule appointments via natural language.</p>
+            </div>
+            <div class="form-group mb-0" style="min-width: 200px;">
+              <select class="form-select form-select-sm" [(ngModel)]="chatContextPatientId">
+                <option [ngValue]="null">No Patient Context (General)</option>
+                <option *ngFor="let p of patientsPaged?.items" [value]="p.id">
+                  Anchor to #{{ p.id }} {{ p.fullName }}
+                </option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Chat Messages Area -->
+          <div class="chat-messages">
+            <div class="chat-bubble chat-bubble-ai">
+              <strong>Healthcare AI Assistant:</strong>
+              <p>Hello! I have autonomous access to your SQL Server database. I can search patients, retrieve clinical histories, and book consultations. How can I help you today?</p>
+            </div>
+
+            <div *ngFor="let msg of chatHistory" class="chat-bubble" [class.chat-bubble-user]="msg.role === 'user'" [class.chat-bubble-ai]="msg.role === 'model'">
+              <strong>{{ msg.role === 'user' ? 'You' : 'Healthcare AI' }}:</strong>
+              <p style="white-space: pre-wrap;">{{ msg.content }}</p>
+            </div>
+
+            <div *ngIf="sendingChat" class="chat-bubble chat-bubble-ai">
+              <div class="typing-indicator">Gemini is querying database tools...</div>
+            </div>
+          </div>
+
+          <!-- Chat Input Bar -->
+          <div class="chat-input-bar">
+            <input 
+              type="text" 
+              class="form-control" 
+              placeholder="e.g. Find patient Eleanor Vance and summarize her last consultation medications"
+              [(ngModel)]="chatMessage" 
+              (keyup.enter)="sendChatMessage()" />
+            <button class="btn btn-purple" [disabled]="sendingChat || !chatMessage.trim()" (click)="sendChatMessage()">
+              <span>Send</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- SUBTAB C: SYMPTOM TRIAGE -->
+      <div *ngIf="aiSubTab === 'triage'" class="ai-tab-content">
+        <div class="card ai-card">
+          <div class="ai-card-header">
+            <h3>Emergency & Specialty Symptom Triage</h3>
+            <p class="text-sm text-muted">Evaluates patient reported symptoms, detects critical red flags, and recommends medical specialties.</p>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Reported Symptoms Description:</label>
+            <textarea class="form-control" [(ngModel)]="triageForm.symptoms" rows="3"></textarea>
+          </div>
+
+          <div class="ai-form-grid">
+            <div class="form-group">
+              <label class="form-label">Patient Age:</label>
+              <input type="number" class="form-control" [(ngModel)]="triageForm.patientAge" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Gender:</label>
+              <select class="form-select" [(ngModel)]="triageForm.gender">
+                <option value="Female">Female</option>
+                <option value="Male">Male</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Known Chronic Conditions:</label>
+              <input type="text" class="form-control" [(ngModel)]="triageForm.conditions" />
+            </div>
+          </div>
+
+          <div class="ai-card-actions">
+            <button class="btn btn-primary" [disabled]="runningTriage" (click)="runTriage()">
+              <span>{{ runningTriage ? 'Analyzing Symptoms...' : 'Run Symptom Triage' }}</span>
+            </button>
+          </div>
+
+          <div *ngIf="triageResult" class="ai-result-box mt-4">
+            <div class="ai-result-header">
+              <h4>Triage Assessment Result</h4>
+              <span class="badge" 
+                [class.badge-danger]="triageResult.urgencyLevel === 'Emergency' || triageResult.urgencyLevel === 'High'"
+                [class.badge-warning]="triageResult.urgencyLevel === 'Moderate'"
+                [class.badge-success]="triageResult.urgencyLevel === 'Low'">
+                Urgency Level: {{ triageResult.urgencyLevel }}
+              </span>
+            </div>
+
+            <div class="detail-row mb-3">
+              <strong>Recommended Medical Specialty:</strong> 
+              <span class="badge badge-purple ml-2">{{ triageResult.recommendedSpecialty }}</span>
+            </div>
+
+            <p class="ai-summary-text mb-4">{{ triageResult.triageNotes }}</p>
+
+            <div class="ai-result-columns">
+              <div class="ai-result-col" *ngIf="triageResult.redFlagQuestions.length > 0">
+                <h5>🚩 Red Flag Screening Questions</h5>
+                <ul>
+                  <li *ngFor="let q of triageResult.redFlagQuestions">{{ q }}</li>
+                </ul>
+              </div>
+              <div class="ai-result-col" *ngIf="triageResult.suggestedNextSteps.length > 0">
+                <h5>📋 Recommended Next Steps</h5>
+                <ul>
+                  <li *ngFor="let s of triageResult.suggestedNextSteps">{{ s }}</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- TAB 4: EMAIL AUDIT LOGS                                      -->
+    <!-- ============================================================ -->
+    <section *ngIf="activeTab === 'emails'" class="tab-pane">
+      <div class="pane-header">
+        <div>
+          <h2>Email Audit Logs</h2>
+          <p class="subtitle">History of dummy welcome emails triggered upon patient creation</p>
+        </div>
+        <button class="btn btn-secondary" (click)="loadEmailLogs()">
+          <span>↻ Refresh</span>
+        </button>
+      </div>
+
+      <div *ngIf="loadingEmails" class="loading-state">
+        <div class="spinner"></div>
+        <p>Loading email logs...</p>
+      </div>
+
+      <div *ngIf="!loadingEmails" class="card table-card">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Recipient</th>
+              <th>Subject</th>
+              <th>Dispatch Time</th>
+              <th>Status</th>
+              <th style="text-align: right;">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr *ngFor="let log of emailLogs">
+              <td>#{{ log.id }}</td>
+              <td>
+                <strong>{{ log.recipientName }}</strong>
+                <div class="text-sm text-muted">{{ log.recipientEmail }}</div>
+              </td>
+              <td>{{ log.subject }}</td>
+              <td>{{ log.sentAt | date:'MMM d, y, h:mm a' }}</td>
+              <td>
+                <span class="badge badge-success">✅ Delivered (Dummy)</span>
+              </td>
+              <td style="text-align: right;">
+                <button class="btn btn-secondary btn-sm" (click)="openEmailPreview(log)">
+                  View Body
+                </button>
+              </td>
+            </tr>
+            <tr *ngIf="emailLogs.length === 0">
+              <td colspan="6" class="empty-state">
+                <p>No dummy emails have been sent yet. Create a new patient to trigger a welcome email.</p>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- TAB 5: SETTINGS & CONFIGURATION                              -->
+    <!-- ============================================================ -->
+    <section *ngIf="activeTab === 'settings'" class="tab-pane">
+      <div class="pane-header">
+        <div>
+          <h2>System Settings & Connections</h2>
+          <p class="subtitle">Configure API endpoint, Gemini model, and connection overrides</p>
+        </div>
+      </div>
+
+      <div class="card ai-card">
+        <div class="form-group">
+          <label class="form-label">ASP.NET Core API Base URL:</label>
+          <div style="display: flex; gap: 0.5rem;">
+            <input type="text" class="form-control" [(ngModel)]="api.baseUrl" />
+            <button class="btn btn-secondary" (click)="checkConnection()">Test Connection</button>
+          </div>
+          <small class="text-muted">Default: http://localhost:5056</small>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Gemini Model Identifier:</label>
+          <input type="text" class="form-control" [(ngModel)]="aiModelOverride" placeholder="e.g. gemini-flash-latest" />
+          <small class="text-muted">Recommended: <code>gemini-flash-latest</code>, <code>gemini-3.7-flash</code>, <code>gemini-3.5-flash</code></small>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Google Gemini API Key Override (Optional):</label>
+          <input type="password" class="form-control" [(ngModel)]="aiApiKeyOverride" placeholder="Leave empty to use appsettings.json key" />
+        </div>
+
+        <div class="form-group" *ngIf="availableModels.length > 0">
+          <label class="form-label">Active Models Discovered for Your API Key:</label>
+          <div class="model-tags">
+            <span 
+              *ngFor="let m of availableModels" 
+              class="model-tag" 
+              [class.active-tag]="aiModelOverride === m"
+              (click)="aiModelOverride = m">
+              {{ m }}
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ============================================================ -->
+  <!-- MODAL: CREATE / EDIT PATIENT                                 -->
+  <!-- ============================================================ -->
+  <div class="modal-overlay" *ngIf="showPatientModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>{{ isEditingPatient ? 'Edit Patient' : 'Register New Patient' }}</h3>
+        <button class="btn btn-secondary btn-sm" (click)="showPatientModal = false">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label class="form-label">First Name *</label>
+            <input type="text" class="form-control" [(ngModel)]="patientForm.firstName" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Last Name *</label>
+            <input type="text" class="form-control" [(ngModel)]="patientForm.lastName" required />
+          </div>
+        </div>
+
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label class="form-label">Email Address *</label>
+            <input type="email" class="form-control" [(ngModel)]="patientForm.email" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Phone Number</label>
+            <input type="text" class="form-control" [(ngModel)]="patientForm.phoneNumber" />
+          </div>
+        </div>
+
+        <div class="form-grid-3">
+          <div class="form-group">
+            <label class="form-label">Age *</label>
+            <input type="number" class="form-control" [(ngModel)]="patientForm.age" min="0" max="130" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Gender *</label>
+            <select class="form-select" [(ngModel)]="patientForm.gender">
+              <option value="Female">Female</option>
+              <option value="Male">Male</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Date of Birth</label>
+            <input type="date" class="form-control" [(ngModel)]="patientForm.dateOfBirth" />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Residential Address</label>
+          <input type="text" class="form-control" [(ngModel)]="patientForm.address" />
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Medical Notes / Background</label>
+          <textarea class="form-control" [(ngModel)]="patientForm.medicalNotes" rows="2" placeholder="Allergies, chronic conditions, notes..."></textarea>
+        </div>
+
+        <!-- Picture Upload (Azure Blob Storage) -->
+        <div class="form-group">
+          <label class="form-label">Profile Picture (Azure Blob Storage)</label>
+          <div class="picture-upload-box">
+            <div class="picture-preview" *ngIf="picturePreviewUrl">
+              <img [src]="picturePreviewUrl" alt="Preview" class="preview-img" />
+            </div>
+            <input type="file" (change)="onPictureSelected($event)" accept="image/*" class="file-input" />
+          </div>
+          <small class="text-muted">Picture will be uploaded to Azure Blob Storage Container <code>patient-pictures</code>.</small>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" (click)="showPatientModal = false">Cancel</button>
+        <button class="btn btn-primary" [disabled]="savingPatient" (click)="savePatient()">
+          <span>{{ savingPatient ? 'Saving & Uploading...' : (isEditingPatient ? 'Update Patient' : 'Create & Send Email') }}</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- MODAL: CREATE / EDIT CONSULTATION                            -->
+  <!-- ============================================================ -->
+  <div class="modal-overlay" *ngIf="showConsultationModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>{{ isEditingConsultation ? 'Edit Consultation' : 'Schedule New Consultation' }}</h3>
+        <button class="btn btn-secondary btn-sm" (click)="showConsultationModal = false">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label class="form-label">Patient *</label>
+            <select class="form-select" [(ngModel)]="consultationForm.patientId" [disabled]="isEditingConsultation">
+              <option *ngFor="let p of patientsPaged?.items" [value]="p.id">
+                #{{ p.id }} - {{ p.fullName }}
+              </option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Doctor Name *</label>
+            <input type="text" class="form-control" [(ngModel)]="consultationForm.doctorName" required />
+          </div>
+        </div>
+
+        <div class="form-grid-3">
+          <div class="form-group">
+            <label class="form-label">Consultation Date *</label>
+            <input type="date" class="form-control" [(ngModel)]="consultationForm.consultationDate" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Status</label>
+            <select class="form-select" [(ngModel)]="consultationForm.status">
+              <option value="Scheduled">Scheduled</option>
+              <option value="Completed">Completed</option>
+              <option value="Cancelled">Cancelled</option>
+              <option value="FollowUpRequired">FollowUpRequired</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Fee ($)</label>
+            <input type="number" class="form-control" [(ngModel)]="consultationForm.fee" min="0" />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Primary Diagnosis *</label>
+          <input type="text" class="form-control" [(ngModel)]="consultationForm.diagnosis" required />
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Reported Symptoms</label>
+          <input type="text" class="form-control" [(ngModel)]="consultationForm.symptoms" />
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Treatment Plan</label>
+          <textarea class="form-control" [(ngModel)]="consultationForm.treatmentPlan" rows="2"></textarea>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Prescription (Rx)</label>
+          <input type="text" class="form-control" [(ngModel)]="consultationForm.prescription" placeholder="e.g. Amoxicillin 500mg TDS x 7 days" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" (click)="showConsultationModal = false">Cancel</button>
+        <button class="btn btn-primary" [disabled]="savingConsultation" (click)="saveConsultation()">
+          <span>{{ savingConsultation ? 'Saving...' : 'Save Consultation' }}</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- MODAL: PATIENT DETAILS DRAWER                                -->
+  <!-- ============================================================ -->
+  <div class="modal-overlay" *ngIf="selectedPatient">
+    <div class="modal-card" style="max-width: 800px;">
+      <div class="modal-header">
+        <div class="patient-cell">
+          <div class="avatar-wrapper">
+            <img *ngIf="selectedPatient.pictureUrl" [src]="selectedPatient.pictureUrl" class="avatar-img" />
+            <div *ngIf="!selectedPatient.pictureUrl" class="avatar-placeholder">
+              {{ selectedPatient.firstName.charAt(0) }}{{ selectedPatient.lastName.charAt(0) }}
+            </div>
+          </div>
+          <div>
+            <h3>{{ selectedPatient.fullName }}</h3>
+            <div class="text-sm text-muted">ID: #{{ selectedPatient.id }} • {{ selectedPatient.age }} years old • {{ selectedPatient.gender }}</div>
+          </div>
+        </div>
+        <button class="btn btn-secondary btn-sm" (click)="selectedPatient = null">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="profile-info-grid">
+          <div><strong>Email:</strong> {{ selectedPatient.email }}</div>
+          <div><strong>Phone:</strong> {{ selectedPatient.phoneNumber || 'Not provided' }}</div>
+          <div><strong>DOB:</strong> {{ selectedPatient.dateOfBirth ? (selectedPatient.dateOfBirth | date:'yyyy-MM-dd') : 'N/A' }}</div>
+          <div><strong>Address:</strong> {{ selectedPatient.address || 'N/A' }}</div>
+        </div>
+
+        <div class="detail-box mt-3" *ngIf="selectedPatient.medicalNotes">
+          <strong>Medical Background & Notes:</strong>
+          <p class="text-sm mt-1">{{ selectedPatient.medicalNotes }}</p>
+        </div>
+
+        <!-- Patient Consultations List -->
+        <div class="mt-4">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+            <h4>Historical Consultations ({{ selectedPatient.consultations.length }})</h4>
+            <button class="btn btn-primary btn-sm" (click)="openCreateConsultationModal(selectedPatient.id)">
+              + Book Visit
+            </button>
+          </div>
+
+          <div *ngIf="selectedPatient.consultations.length === 0" class="empty-state">
+            <p>No consultations on file for this patient.</p>
+          </div>
+
+          <div class="patient-consultations-list" *ngIf="selectedPatient.consultations.length > 0">
+            <div *ngFor="let c of selectedPatient.consultations" class="card p-3 mb-2">
+              <div style="display: flex; justify-content: space-between;">
+                <strong>{{ c.diagnosis }}</strong>
+                <span class="badge badge-success">{{ c.status }}</span>
+              </div>
+              <div class="text-sm text-muted">
+                {{ c.consultationDate | date:'mediumDate' }} with {{ c.doctorName }}
+              </div>
+              <div class="text-sm mt-1" *ngIf="c.prescription">
+                <strong>Rx:</strong> {{ c.prescription }}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-purple" (click)="quickSummarizePatient(selectedPatient.id); selectedPatient = null">
+          <span>✨ Run AI Summary</span>
+        </button>
+        <button class="btn btn-secondary" (click)="selectedPatient = null">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- MODAL: EMAIL BODY PREVIEW                                    -->
+  <!-- ============================================================ -->
+  <div class="modal-overlay" *ngIf="selectedEmailBody">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h3>{{ selectedEmailBody.subject }}</h3>
+          <div class="text-sm text-muted">To: {{ selectedEmailBody.recipientName }} ({{ selectedEmailBody.recipientEmail }})</div>
+        </div>
+        <button class="btn btn-secondary btn-sm" (click)="selectedEmailBody = null">&times;</button>
+      </div>
+      <div class="modal-body">
+        <pre class="email-body-text">{{ selectedEmailBody.body }}</pre>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" (click)="selectedEmailBody = null">Close</button>
+      </div>
+    </div>
+  </div>
+</div>

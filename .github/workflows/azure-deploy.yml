@@ -1,0 +1,62 @@
+name: Build, Test and Deploy to Azure App Service
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  AZURE_WEBAPP_NAME: 'app-patientmgmt-demo'
+  DOTNET_VERSION: '10.0.x'
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Restore dependencies
+      run: dotnet restore PatientManagement.sln
+
+    - name: Build Solution
+      run: dotnet build PatientManagement.sln --configuration Release --no-restore
+
+    - name: Run Unit & Integration Tests
+      run: dotnet test PatientManagement.sln --configuration Release --no-build --verbosity normal
+
+    - name: Publish .NET 10 API
+      run: dotnet publish src/PatientManagement.Api/PatientManagement.Api.csproj -c Release -o ./publish /p:UseAppHost=false
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: webapp-publish
+        path: ./publish
+
+  deploy:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+
+    steps:
+    - name: Download Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: webapp-publish
+        path: ./publish
+
+    - name: Deploy to Azure App Service
+      uses: azure/webapps-deploy@v3
+      with:
+        app-name: ${{ env.AZURE_WEBAPP_NAME }}
+        publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+        package: ./publish
