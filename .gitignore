@@ -3,6 +3,9 @@
 [Oo]bj/
 [Ll]og/
 [Ll]ogs/
+[Tt]est[Rr]esults/
+**/TestResults/
+coverage*.xml
 .vs/
 .vscode/
 *.user
