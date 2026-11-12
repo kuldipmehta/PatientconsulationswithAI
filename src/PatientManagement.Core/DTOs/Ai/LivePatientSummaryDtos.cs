@@ -8,12 +8,7 @@ public class SummarizePatientRequestDto
     public string? CustomInstructions { get; set; }
 
     /// <summary>
-    /// Optional: Your Google Gemini API Key (if not configured in appsettings.json or environment variable)
-    /// </summary>
-    public string? ApiKey { get; set; }
-
-    /// <summary>
-    /// Optional: Gemini model override (defaults to gemini-flash-latest or auto-detected active model)
+    /// Optional: Gemini model override (defaults to server configuration)
     /// </summary>
     public string? Model { get; set; }
 }
@@ -21,18 +16,22 @@ public class SummarizePatientRequestDto
 public class LivePatientSummaryResponseDto
 {
     public int PatientId { get; set; }
-    public string PatientName { get; set; } = string.Empty;
+    public string PatientLabel { get; set; } = string.Empty;
     public int TotalConsultationsFetchedFromDb { get; set; }
     public string AiGeneratedSummary { get; set; } = string.Empty;
     public List<string> AiIdentifiedRisks { get; set; } = new();
     public List<string> AiRecommendedActions { get; set; } = new();
     public string UrgencyAssessment { get; set; } = "Routine";
-    
+    public List<AiSourceCitationDto> SourceCitations { get; set; } = new();
+
     /// <summary>
-    /// The actual raw patient and consultation data fetched from SQL Server that was provided to Gemini
+    /// PII-minimized anonymized clinical data sent to Gemini
     /// </summary>
-    public object? LiveDatabaseDataUsed { get; set; }
-    
+    public object? SanitizedClinicalDataUsed { get; set; }
+
+    public bool IsSimulatedMode { get; set; }
+    public string? SimulatedModeNotice => IsSimulatedMode ? AiSafetyConstants.SimulatedModeBanner : null;
+    public string Disclaimer { get; set; } = AiSafetyConstants.ClinicalDisclaimer;
     public string ModelUsed { get; set; } = "gemini-flash-latest";
     public DateTime GeneratedAtUtc { get; set; } = DateTime.UtcNow;
 }
