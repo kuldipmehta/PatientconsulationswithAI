@@ -1,326 +1,120 @@
-# 🏥 Patient Consultations with AI (.NET 10 + Angular 19 + Google Gemini AI)
+# CareSync — Patient Consultations & Clinical AI Platform
 
-A full-stack, production-ready healthcare management solution featuring a **.NET 10 Web API** (Clean Architecture, EF Core, SQL Server, Azure Blob Storage), an autonomous **Google Gemini AI Clinical Agent** with live database function-calling, and a modern **Angular 19 Standalone Dashboard**.
-
----
-
-## 📋 Table of Contents
-1. [Features & Requirements Coverage](#-features--requirements-coverage)
-2. [Architecture Overview](#-architecture-overview)
-3. [Prerequisites](#-prerequisites)
-4. [Getting Started (Local Development)](#-getting-started-local-development)
-5. [API Endpoints & Swagger](#-api-endpoints--swagger)
-6. [Testing](#-testing)
-7. [Azure App Service Deployment (Bonus)](#-azure-app-service-deployment-bonus)
-8. [Configuration Guide](#-configuration-guide)
+A security-hardened **.NET 10** + **Angular 19** healthcare consultation platform combining Role-Based Access Control (JWT / Azure Entra ID), private Azure Blob Storage, conflict-checked physician scheduling, full audit logging, and a clinical **Google Gemini AI Agent** with rule-based emergency triage and human-in-the-loop action confirmation.
 
 ---
 
-## 🎯 Features & Requirements Coverage
+## Key Architecture & Security Highlights
 
-| Requirement | Implementation Details | Status |
-| :--- | :--- | :---: |
-| **Create a Patient** (Basic details + picture in Azure Blob Storage) | `POST /api/patients` accepts `multipart/form-data` with First/Last Name, Email, Phone, Age, Gender, DOB, Address, Notes, and `Picture` file. Picture is processed via Azure Blob Storage SDK (`Azure.Storage.Blobs`), returning a public blob URI. | ✅ |
-| **Send Dummy Email** (After patient creation) | `IEmailService` / `DummyEmailService` triggers an automated welcome email with patient credentials, formats structured logs in console, and records an audit trail in SQL Server `EmailAuditLogs`. Viewable at `GET /api/emails/logs`. | ✅ |
-| **View Patient List** (.NET 10 API + SQL Server) | `GET /api/patients` queries SQL Server via EF Core, supporting search (name/email), filters (gender, age), sorting, and server-side pagination with consultation summaries. | ✅ |
-| **Data Handling** (Fetch & update patient + consultation using EF Core) | Full CRUD for `Patients` and `Consultations` with 1-to-many relationship, cascade rules, indexing, transaction management, and DTO projections. | ✅ |
-| **Google Gemini AI Agent** (Autonomous Clinical Assistant & Tools) | Multi-turn conversational AI Agent powered by **Google Gemini** with autonomous tool-calling (queries SQL Server, retrieves records, schedules consultations), patient clinical summaries, and symptom triage. | 🤖 |
-| **Bonus Point** (Azure App Service + Swagger Page) | Infrastructure-as-Code (`azure/deploy.bicep` & `azure/azuredeploy.json`), automated deployment script (`deploy-to-azure.ps1`), multi-stage `Dockerfile`, GitHub Actions CI/CD (`.github/workflows/azure-deploy.yml`), and Swagger UI configured for production. | 🌟 |
-
----
-
-## 🏗️ Architecture Overview
-
-The solution adheres to Clean Architecture and DDD principles, separated into clear layers:
-
+```mermaid
+flowchart LR
+    UI["Angular 19 Lazy-Loaded SPA\n(Auth, Patients, Consultations, AI, Audit)"] -->|Bearer JWT| API[".NET 10 Web API\n(FluentValidation + Rate Limiting + Serilog)"]
+    API -->|EF Core 10 + RowVersion + Soft Delete| DB["SQL Server\n(Patients, Doctors, Consultations, AuditLogs, AI Logs)"]
+    API -->|Private Container + 15m SAS / Auth Proxy| BLOB["Azure Blob Storage\n(Fallback: LocalStorage)"]
+    API -->|Deterministic Emergency Rules + PII Scrubber| AI_SAFE["EmergencyTriageRuleEngine\n& PatientAiSanitizer"]
+    AI_SAFE -->|Polly Retries + Circuit Breaker + JSON Schema| GEMINI["Google Gemini API\n(gemini-flash-latest)"]
 ```
-d:\Test Task\
-│
-├── src\
-│   ├── PatientManagement.Core\            # Domain Entities, DTOs, Enums, Service Interfaces
-│   │   ├── Entities\                      # Patient, Consultation, EmailAuditLog
-│   │   ├── DTOs\                          # Patient & Consultation requests, responses, filters
-│   │   ├── Enums\                         # ConsultationStatus (Scheduled, Completed, etc.)
-│   │   └── Interfaces\                    # IPatientService, IConsultationService, IBlobStorageService, IEmailService
-│   │
-│   ├── PatientManagement.Infrastructure\  # EF Core, Migrations, Azure Blob Storage, Email Service
-│   │   ├── Data\                          # ApplicationDbContext, Fluent API configs, DbInitializer
-│   │   │   └── Migrations\                # Auto-generated EF Core SQL Server migrations
-│   │   └── Services\                      # AzureBlobStorageService, DummyEmailService, PatientService, ConsultationService
-│   │
-│   └── PatientManagement.Api\             # ASP.NET Core .NET 10 Web API
-│       ├── Controllers\                   # PatientsController, ConsultationsController, EmailsController
-│       ├── Middleware\                    # ExceptionHandlingMiddleware
-│       ├── Program.cs                     # DI, pipeline, Swagger UI, auto-migration & seeding
-│       └── appsettings.json               # SQL Server connection string & Azure configurations
-│
-├── frontend\                              # Modern Angular 19 Standalone Single Page Application
-│   ├── src\app\
-│   │   ├── models\                        # TypeScript DTOs & Interfaces
-│   │   ├── services\                      # ApiService (Patients, Consultations, AI, Emails)
-│   │   └── app.component.*                # Dashboard UI (Patients, AI Clinical Agent, Logs)
-│   ├── proxy.conf.json                    # Dev proxy to ASP.NET Core API
-│   └── package.json                       # Angular 19 dependencies & scripts
-│
-├── tests\
-│   └── PatientManagement.Tests\           # 12 Unit & Integration Tests (xUnit, Moq, FluentAssertions)
-│
-├── azure\                                 # Azure App Service IaC & Deployment
-│   ├── deploy.bicep                       # Complete Azure resources Bicep template
-│   ├── azuredeploy.json                   # ARM template for 1-click Azure deployment
-│   ├── deploy-to-azure.ps1                # PowerShell automated deployment script
-│   └── deploy-to-azure.sh                 # Bash deployment script
-│
-├── .github\workflows\azure-deploy.yml     # GitHub Actions CI/CD workflow
-├── Dockerfile                             # Multi-stage optimized .NET 10 container
-└── PatientManagement.sln                  # Visual Studio / dotnet solution
+
+### 1. Security & Privacy
+- **JWT + Optional Azure AD / Entra ID Authentication:** Roles (`Admin`, `Doctor`, `Receptionist`). Physicians are strictly scoped to their assigned patients (`PrimaryDoctorId`).
+- **Server-Side AI Key Management:** No `apiKey` fields exist in API DTOs or browser requests. `Gemini:ApiKey` is loaded exclusively from environment variables or Azure Key Vault.
+- **Private Profile Photos:** Containers use `PublicAccessType.None`; clients receive short-lived 15-minute Read SAS URIs (or authenticated `/api/patients/{id}/picture` streaming fallback). Strict 2 MB upload limit and file magic-byte verification (JPEG/PNG/WebP).
+- **Safe Onboarding Notifications:** Welcome emails deliver single-use hashed set-password links (`/set-password?token=...`) and never transmit plaintext passwords.
+- **Soft Delete & Audit Trail:** Deletions set `IsDeleted`, `DeletedAtUtc`, and `DeletedByUserId` while preserving clinical history. `ApplicationDbContext` records entity mutations to `AuditLogs`. See [COMPLIANCE.md](COMPLIANCE.md) for DPDP Act (2023), HIPAA, and Google Gemini API data-use guidance.
+- **Production Controls:** Startup auto-migrations are disabled in production (migrations are packaged separately as idempotent SQL in CI); rate limiting (`auth`, `ai`, and global policies), strict CORS allowlists, and FluentValidation filter active.
+
+### 2. Clinical AI Safety & Quality (`gemini-flash-latest`)
+- **Deterministic Emergency Triage (`EmergencyTriageRuleEngine`):** Cardiac chest pain, stroke FAST signs, airway/anaphylaxis, psychiatric crisis, and hemorrhage short-circuit before any LLM invocation to issue immediate emergency instructions (`911` / `112` / `108` / `988`).
+- **Prompt Injection Defense & PII Minimization (`PatientAiSanitizer`):** User-written notes/symptoms are delimited inside `<untrusted_clinical_text>` tags; names, emails, phone numbers, and addresses are stripped before calling Gemini; tools execute inside C# authorization checks.
+- **Human-in-the-Loop Confirmation:** Scheduling via `propose_consultation` creates a `PendingAiActions` proposal (`Book Dr. Sarah Jenkins...`) requiring an explicit click to `POST /api/ai/actions/{actionId}/confirm`.
+- **Structured Output, Citations, Streaming & Simulated Banner:** Enforces Gemini `responseSchema`, returns consultation `#ID` citations, streams responses over SSE (`/api/ai/chat/stream`) with server-side `AiChatSessions`, logs all runs to `AiInteractionLogs`, and displays an explicit **SIMULATED MODE ACTIVE** banner when running without a live server key.
+
+### 3. Resilience & Scheduling Reliability
+- **Polly Standard Resilience:** `AddStandardResilienceHandler` wraps outbound Gemini calls with exponential backoff retries, timeouts, and circuit breaking.
+- **Double-Booking Prevention & Concurrency:** `DoctorsController` exposes slot availability (`/api/doctors/{id}/availability`) and prevents overlapping slots with HTTP `409 Conflict`. `Patient` and `Consultation` carry `[Timestamp] byte[] RowVersion` tokens returning `409 Conflict` on stale updates.
+- **Observability:** Serilog structured logging (with optional Application Insights sink) and `/health` + `/health/ready` database health checks.
+
+---
+
+## Project Structure
+
+```text
+├── src/
+│   ├── PatientManagement.Core/            # Entities, Enums, Domain Exceptions, DTOs, Interfaces
+│   ├── PatientManagement.Infrastructure/  # EF Core 10, Migrations, Auth, AI Safety, Blob & Email Services
+│   └── PatientManagement.Api/             # .NET 10 Controllers, JWT/CORS/RateLimit Middleware, Health Checks
+├── tests/
+│   └── PatientManagement.Tests/           # 52 xUnit Tests (Unit, Integration, RBAC, Concurrency, Mocked AI & 28-Case Eval Suite)
+├── frontend/                              # Angular 19 Standalone SPA (Lazy-Loaded Features + Karma Specs)
+├── .github/workflows/azure-deploy.yml     # CI/CD: .NET Test+Coverage, EF Script, Angular Lint/Test/Build
+├── COMPLIANCE.md                          # DPDP Act, HIPAA & AI Data Governance Guide
+├── LICENSE                                # MIT License
+└── PatientManagement.slnx                 # .NET Solution File
 ```
 
 ---
 
-## ⚙️ Prerequisites
+## Getting Started (Local Development)
 
-- **.NET 10 SDK** (v10.0.x or later)
-- **SQL Server** (LocalDB `(localdb)\MSSQLLocalDB`, standard `localhost`, or Azure SQL)
-- *(Optional)* **Azure CLI (`az`)** for deploying to Azure App Service
-- *(Optional)* **Docker Desktop** if running containerized
+### Prerequisites
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+- [Node.js 20+ / 22+](https://nodejs.org/)
+- SQL Server (or LocalDB)
 
----
+### 1. Run the Backend API
+Configure your connection string and optional Gemini key via User Secrets or `src/PatientManagement.Api/appsettings.Development.json`:
 
-## 🚀 Getting Started (Local Development)
-
-### 1. Clone or Open the Repository
 ```bash
-cd "d:\Test Task"
+cd src/PatientManagement.Api
+dotnet user-secrets set "Gemini:ApiKey" "YOUR_SERVER_SIDE_GEMINI_KEY"
+dotnet run
 ```
 
-### 2. Configure Database Connection (Optional)
-The connection string in `src/PatientManagement.Api/appsettings.json` defaults to SQL Server LocalDB:
-```json
-"ConnectionStrings": {
-  "DefaultConnection": "Server=(localdb)\\MSSQLLocalDB;Database=PatientManagementDb;Trusted_Connection=True;MultipleActiveResultSets=true;TrustServerCertificate=True"
-}
-```
-*(If you prefer a full SQL Server instance, replace `(localdb)\MSSQLLocalDB` with `localhost`).*
+- API / Swagger UI: `http://localhost:5056`
+- Health endpoint: `http://localhost:5056/health`
 
-### 3. Restore and Build
-```bash
-dotnet restore
-dotnet build
-```
-
-### 4. Run the Backend API
-```bash
-dotnet run --project src/PatientManagement.Api
-```
-
-On startup:
-- EF Core automatically applies all SQL Server migrations (`Database.MigrateAsync()`).
-- Initial sample patient and consultation data is seeded automatically.
-- Swagger UI launches at **`http://localhost:5056/`** (or **`https://localhost:7102/swagger`**).
-
-### 5. Run the Angular Frontend Dashboard
+### 2. Run the Angular 19 Frontend
 ```bash
 cd frontend
+npm install
 npm start
 ```
 
-Open your browser at **`http://localhost:4200/`** to interact with the complete web UI:
-- **Patient Registry**: Create patients with Azure Blob picture upload, search, filter, paginate, edit, delete.
-- **Consultations Management**: Schedule and edit doctor appointments, diagnoses, and prescriptions.
-- **AI Clinical Agent**: Run live Gemini clinical assessments grounded in SQL Server records, autonomous database chat, and symptom triage.
-- **Email Audit**: View all sent dummy welcome emails and formatted email bodies.
+- Angular Dev UI: `http://localhost:4200` (configured with `proxy.conf.json` -> `http://localhost:5056`)
 
----
+### Development Seed Accounts
 
-## 📡 API Endpoints & Swagger
-
-Swagger UI is served at the root URL **`/`** as well as **`/swagger`**.
-
-### 1. Patients API (`/api/patients`)
-| Method | Endpoint | Description | Payload |
+| Role | Email | Password | Permissions |
 | :--- | :--- | :--- | :--- |
-| `POST` | `/api/patients` | **Create Patient**: Stores picture in Azure Blob Storage, saves to SQL Server, triggers dummy email. | `multipart/form-data` |
-| `GET` | `/api/patients` | **View Patient List**: Filter, search, and paginate patients with consultation counts. | Query parameters (`searchTerm`, `gender`, `pageNumber`, `pageSize`) |
-| `GET` | `/api/patients/{id}` | **Fetch Patient**: Patient profile along with their complete consultation history. | - |
-| `PUT` | `/api/patients/{id}` | **Update Patient**: Updates patient record and optionally replaces profile picture. | `multipart/form-data` |
-| `DELETE` | `/api/patients/{id}` | **Delete Patient**: Cascades delete to consultations and deletes picture from blob storage. | - |
+| **Admin** | `admin@patientportal.com` | `Admin@12345` | Full access including Audit & AI Interaction Logs |
+| **Doctor** | `sarah.jenkins@patientportal.com` | `Doctor@12345` | Own assigned patients, consultations & AI Assistant |
+| **Doctor** | `robert.sterling@patientportal.com` | `Doctor@12345` | Own assigned patients, consultations & AI Assistant |
+| **Receptionist** | `reception@patientportal.com` | `Reception@12345` | Registration, scheduling & onboarding email logs (no AI/delete) |
 
-#### Sample: Create Patient Request (`multipart/form-data`)
+---
+
+## Testing & Verification
+
+### Backend (.NET 10 — 52 Automated Tests)
+Includes unit tests, InMemory API integration tests (`WebApplicationFactory<Program>`), RBAC scoping checks (`401`/`403`), concurrency & double-booking (`409`), upload magic-byte rejection (`400`), mocked HTTP Gemini tool-calling tests, and a **28-case offline AI evaluation dataset** (`tests/PatientManagement.Tests/Evaluation/ai-evaluation-dataset.json`):
+
 ```bash
-curl -X POST "https://localhost:7102/api/patients" \
-  -F "FirstName=Jane" \
-  -F "LastName=Doe" \
-  -F "Email=jane.doe@example.com" \
-  -F "PhoneNumber=+1-555-0199" \
-  -F "Age=32" \
-  -F "Gender=Female" \
-  -F "DateOfBirth=1994-06-20" \
-  -F "Address=100 Main St, Suite 400" \
-  -F "MedicalNotes=No known allergies" \
-  -F "Picture=@/path/to/profile.jpg"
+dotnet test PatientManagement.slnx --collect:"XPlat Code Coverage"
 ```
 
-### 2. Consultations API (`/api/consultations`)
-| Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| `GET` | `/api/consultations?patientId={id}` | Fetch consultations (optionally filtered by patient) |
-| `GET` | `/api/consultations/{id}` | Fetch consultation details by ID |
-| `POST` | `/api/consultations` | Schedule a new consultation for a patient |
-| `PUT` | `/api/consultations/{id}` | Update consultation diagnosis, notes, status, fee |
-| `DELETE` | `/api/consultations/{id}` | Delete consultation record |
-
-### 3. Email Audit API (`/api/emails`)
-| Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| `GET` | `/api/emails/logs` | View dispatched dummy welcome emails for audit and verification |
-
-### 4. 🤖 Google Gemini AI Agent API (`/api/ai`)
-| Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| `GET` | `/api/ai/status` | Check AI Agent operational status, active model, and loaded tools |
-| `GET` | `/api/ai/models` | List all available active Gemini models supported by your API key |
-| `POST` | `/api/ai/patients/{id}/live-summary` | **Live Database Clinical Summary**: Fetches live patient profile & consultations from SQL Server via EF Core, feeds the real data directly to Gemini (`gemini-3.8-flash`), and synthesizes a live summary, clinical risks, and action items |
-| `POST` | `/api/ai/chat` | **Autonomous Clinical Agent**: Chat with Gemini to query SQL Server, retrieve patient records, and schedule consultations via function-calling |
-| `POST` | `/api/ai/patients/{id}/clinical-summary` | **Clinical Summarizer**: Generates comprehensive clinical summary, past diagnosis highlights, risk factors, and recommendations |
-| `POST` | `/api/ai/triage` | **Symptom Triage**: Analyzes reported symptoms, assesses clinical urgency, and suggests medical specialties & red flags |
-
-#### How to Provide Your Gemini API Key:
-You can provide your Google Gemini API Key in any of the following ways (no code modifications needed):
-1. **Directly in Swagger / Request Body**: Pass `"apiKey": "AIzaSy..."` in the JSON request body.
-2. **Via HTTP Request Header**: Include `X-Gemini-ApiKey: AIzaSy...` in your request headers.
-3. **In `appsettings.json`**: Set `"Gemini": { "ApiKey": "YOUR_KEY", "Model": "gemini-3.8-flash" }`.
-4. **Environment Variable**: Set `GEMINI_API_KEY=AIzaSy...`.
-
-*(Note: The active default model is **`gemini-3.8-flash`**. If any model ever returns 404, the system automatically inspects Google's recommendations and auto-retries with a working model).*
-
-#### Sample: Live Patient Summary Request (`POST /api/ai/patients/{id}/live-summary`)
-```json
-{
-  "customInstructions": "Synthesize past consultations and diagnoses. Focus on cardiovascular health and medication history.",
-  "apiKey": "YOUR_GEMINI_API_KEY_HERE"
-}
-```
-
-#### Sample: AI Agent Chat Request (`POST /api/ai/chat`)
-```json
-{
-  "message": "Find patient Eleanor Vance and summarize what medications and diagnoses were recorded in her last consultation.",
-  "apiKey": "YOUR_GEMINI_API_KEY_HERE"
-}
-```
-
-#### Sample: AI Autonomous Scheduling via Natural Language
-```json
-{
-  "message": "Please book a follow-up consultation for patient #1 with Dr. Sarah Jenkins for allergy review.",
-  "patientContextId": 1
-}
-```
-
-#### Sample: AI Symptom Triage Request (`POST /api/ai/triage`)
-```json
-{
-  "symptoms": "Sudden sharp chest pain radiating to left shoulder and lightheadedness",
-  "patientAge": 55,
-  "gender": "Male"
-}
+### Frontend (Angular 19)
+```bash
+cd frontend
+npm run lint
+npm test
+npm run build
 ```
 
 ---
 
-## 🧪 Testing
+## Repository Metadata Suggestions (GitHub)
+- **Suggested Description:** `Full-stack .NET 10 + Angular 19 Clinical AI Consultation Platform with JWT RBAC, Private Blob SAS, Soft-Delete Audit Trail, Double-Booking Prevention, and Rule-Safe Gemini AI`
+- **Suggested Topics:** `dotnet-10`, `angular-19`, `gemini-ai`, `healthcare`, `jwt-authentication`, `rbac`, `entity-framework-core`, `clean-architecture`, `polly`, `azure-blob-storage`
 
-The solution includes **19 comprehensive unit and integration tests** verifying:
-- Patient creation with Azure Blob Storage upload and dummy email dispatch.
-- Paged querying, sorting, and search filtering on patient records.
-- Patient and consultation update and cascading deletion.
-- Dummy email formatted body, structured logging, and database auditing.
-- Google Gemini AI Agent tool calling (`search_patients`, `schedule_consultation`, `get_patient_details`).
-- AI patient clinical summary generation and symptom triage rules.
-- End-to-end integration tests using `WebApplicationFactory<Program>`.
-
-Run the test suite with:
-```bash
-dotnet test
-```
-
-Expected output:
-```
-Passed!  - Failed: 0, Passed: 19, Skipped: 0, Total: 19
-```
-
----
-
-## ☁️ Azure App Service Deployment (Bonus Point)
-
-The API is pre-configured for automated deployment to **Azure App Service** with a live Swagger documentation page.
-
-### Option 1: Automated Deployment Script (PowerShell)
-```powershell
-cd azure
-.\deploy-to-azure.ps1 -ResourceGroupName "rg-patient-management" -Location "eastus"
-```
-The script will:
-1. Authenticate with Azure (`az login`).
-2. Provision the Azure App Service (Linux .NET 10), Azure SQL Database, and Azure Blob Storage via Bicep.
-3. Build and package the .NET 10 Web API.
-4. Deploy the zip artifact to the Azure App Service.
-5. Print the live URLs:
-   - **App URL:** `https://app-patientmgmt-<id>.azurewebsites.net`
-   - **Swagger Page:** `https://app-patientmgmt-<id>.azurewebsites.net/swagger`
-
-### Option 2: Azure CLI / Cloud Shell (Bash)
-```bash
-cd azure
-chmod +x deploy-to-azure.sh
-./deploy-to-azure.sh rg-patient-management eastus
-```
-
-### Option 3: GitHub Actions CI/CD
-A pre-built workflow is located in `.github/workflows/azure-deploy.yml`.
-1. Push your repository to GitHub.
-2. In GitHub repository settings, add `AZURE_WEBAPP_PUBLISH_PROFILE` secret (downloaded from Azure App Service).
-3. Any push to `main` will automatically build, test, and deploy to Azure App Service!
-
-### Option 4: Docker Container Deployment
-```bash
-# Build image
-docker build -t patient-management-api:latest .
-
-# Run container
-docker run -d -p 8080:8080 -e "ConnectionStrings__DefaultConnection=Server=host.docker.internal;Database=PatientManagementDb;User Id=sa;Password=YourPassword123!;TrustServerCertificate=True" patient-management-api:latest
-```
-
----
-
-## 🔧 Configuration Guide
-
-`appsettings.json` supports environment-specific overrides or Azure App Settings:
-
-```json
-{
-  "ConnectionStrings": {
-    "DefaultConnection": "Server=(localdb)\\MSSQLLocalDB;Database=PatientManagementDb;Trusted_Connection=True;MultipleActiveResultSets=true;TrustServerCertificate=True"
-  },
-  "AzureBlobStorage": {
-    "ConnectionString": "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net",
-    "ContainerName": "patient-pictures"
-  },
-  "EmailSettings": {
-    "SenderEmail": "noreply@patientportal.com",
-    "SenderName": "Patient Care Management"
-  },
-  "Gemini": {
-    "ApiKey": "YOUR_GEMINI_API_KEY",
-    "Model": "gemini-1.5-flash",
-    "ApiBaseUrl": "https://generativelanguage.googleapis.com/v1beta"
-  }
-}
-```
-
-> **Note on Google Gemini AI Agent**:
-> - You can obtain a free Gemini API key from [Google AI Studio](https://aistudio.google.com/). Set it in `appsettings.json` under `"Gemini:ApiKey"` or via the `GEMINI_API_KEY` environment variable.
-> - **Zero-Config Fallback**: Even without an API key, the AI Agent operates out of the box in an intelligent simulated/fallback mode that queries SQL Server, demonstrates tool execution, generates clinical summaries, and performs symptom triage without throwing any errors!
-
-> **Note on Local Azure Blob Storage**: If no Azure Storage connection string is specified, the application seamlessly uses a local simulated storage provider (`LocalStorage/blobs`) so you can run, create patients, and upload pictures locally without requiring an active Azure subscription. When deployed to Azure, simply supply your Azure Blob Storage connection string or let the Bicep template wire it up automatically!
+## License
+Released under the [MIT License](LICENSE).
