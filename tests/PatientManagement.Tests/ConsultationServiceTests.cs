@@ -5,6 +5,7 @@ using Moq;
 using PatientManagement.Core.DTOs.Consultations;
 using PatientManagement.Core.Entities;
 using PatientManagement.Core.Enums;
+using PatientManagement.Core.Exceptions;
 using PatientManagement.Infrastructure.Data;
 using PatientManagement.Infrastructure.Services;
 using Xunit;
@@ -48,7 +49,8 @@ public class ConsultationServiceTests : IDisposable
         {
             PatientId = patient.Id,
             DoctorName = "Dr. House",
-            ConsultationDate = DateTime.UtcNow,
+            ConsultationDate = DateTime.UtcNow.AddDays(1),
+            DurationMinutes = 30,
             Diagnosis = "Differential diagnosis for chronic fatigue",
             Symptoms = "Fatigue, mild muscle weakness",
             Notes = "Ordered MRI and complete blood panel.",
@@ -85,6 +87,52 @@ public class ConsultationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task CreateConsultationAsync_WithOverlappingDoctorSlot_ThrowsBookingConflictException()
+    {
+        // Arrange
+        var doctor = new Doctor
+        {
+            FullName = "Dr. Sarah Jenkins",
+            Specialty = "Cardiology",
+            Email = "sarah.jenkins@patientportal.com"
+        };
+        var patient = new Patient
+        {
+            FirstName = "Arthur",
+            LastName = "Dent",
+            Email = "arthur@example.com",
+            Age = 40,
+            Gender = "Male"
+        };
+        _dbContext.Doctors.Add(doctor);
+        _dbContext.Patients.Add(patient);
+        await _dbContext.SaveChangesAsync();
+
+        var slotStart = new DateTime(2026, 11, 20, 10, 0, 0, DateTimeKind.Utc);
+        await _consultationService.CreateConsultationAsync(new CreateConsultationDto
+        {
+            PatientId = patient.Id,
+            DoctorId = doctor.Id,
+            DoctorName = doctor.FullName,
+            ConsultationDate = slotStart,
+            DurationMinutes = 30,
+            Diagnosis = "Initial checkup"
+        });
+
+        // Act & Assert: 10:15 overlaps 10:00-10:30
+        await Assert.ThrowsAsync<BookingConflictException>(() =>
+            _consultationService.CreateConsultationAsync(new CreateConsultationDto
+            {
+                PatientId = patient.Id,
+                DoctorId = doctor.Id,
+                DoctorName = doctor.FullName,
+                ConsultationDate = slotStart.AddMinutes(15),
+                DurationMinutes = 30,
+                Diagnosis = "Overlapping booking attempt"
+            }));
+    }
+
+    [Fact]
     public async Task UpdateConsultationAsync_ModifiesFieldsAndSaves()
     {
         // Arrange
@@ -106,7 +154,8 @@ public class ConsultationServiceTests : IDisposable
         var updateDto = new UpdateConsultationDto
         {
             DoctorName = "Dr. Holmes",
-            ConsultationDate = DateTime.UtcNow,
+            ConsultationDate = DateTime.UtcNow.AddHours(2),
+            DurationMinutes = 30,
             Diagnosis = "Resolved shoulder sprain",
             Status = ConsultationStatus.Completed,
             Fee = 180.00m,
@@ -121,6 +170,36 @@ public class ConsultationServiceTests : IDisposable
         updated!.Diagnosis.Should().Be("Resolved shoulder sprain");
         updated.Status.Should().Be(ConsultationStatus.Completed);
         updated.Fee.Should().Be(180.00m);
+    }
+
+    [Fact]
+    public async Task DeleteConsultationAsync_SoftDeletesRecord()
+    {
+        // Arrange
+        var patient = new Patient { FirstName = "Clara", LastName = "Oswald", Email = "clara@example.com", Age = 27, Gender = "Female" };
+        _dbContext.Patients.Add(patient);
+        await _dbContext.SaveChangesAsync();
+
+        var consultation = new Consultation
+        {
+            PatientId = patient.Id,
+            DoctorName = "Dr. Who",
+            ConsultationDate = DateTime.UtcNow.AddDays(1),
+            Diagnosis = "Annual Exam",
+            Status = ConsultationStatus.Scheduled
+        };
+        _dbContext.Consultations.Add(consultation);
+        await _dbContext.SaveChangesAsync();
+
+        // Act
+        var deleted = await _consultationService.DeleteConsultationAsync(consultation.Id);
+
+        // Assert
+        deleted.Should().BeTrue();
+        (await _dbContext.Consultations.FirstOrDefaultAsync(c => c.Id == consultation.Id)).Should().BeNull();
+        var archived = await _dbContext.Consultations.IgnoreQueryFilters().FirstOrDefaultAsync(c => c.Id == consultation.Id);
+        archived.Should().NotBeNull();
+        archived!.IsDeleted.Should().BeTrue();
     }
 
     public void Dispose()

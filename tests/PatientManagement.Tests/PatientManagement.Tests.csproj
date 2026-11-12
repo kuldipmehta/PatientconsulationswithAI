@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -26,6 +26,12 @@
     <ProjectReference Include="..\..\src\PatientManagement.Api\PatientManagement.Api.csproj" />
     <ProjectReference Include="..\..\src\PatientManagement.Infrastructure\PatientManagement.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\PatientManagement.Core\PatientManagement.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Evaluation\ai-evaluation-dataset.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

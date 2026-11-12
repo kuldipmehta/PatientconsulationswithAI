@@ -1,4 +1,3 @@
-using System.Text;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
@@ -6,6 +5,8 @@ using Microsoft.Extensions.Logging;
 using Moq;
 using PatientManagement.Core.DTOs.Patients;
 using PatientManagement.Core.Entities;
+using PatientManagement.Core.Enums;
+using PatientManagement.Core.Exceptions;
 using PatientManagement.Core.Interfaces;
 using PatientManagement.Infrastructure.Data;
 using PatientManagement.Infrastructure.Services;
@@ -43,7 +44,7 @@ public class PatientServiceTests : IDisposable
     public async Task CreatePatientAsync_WithValidDataAndPicture_StoresInBlob_SavesToDb_AndSendsEmail()
     {
         // Arrange
-        var fakeFileContent = "Fake image content bytes"u8.ToArray();
+        var fakeFileContent = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10 };
         var stream = new MemoryStream(fakeFileContent);
         var formFile = new FormFile(stream, 0, fakeFileContent.Length, "Picture", "avatar.jpg")
         {
@@ -65,7 +66,7 @@ public class PatientServiceTests : IDisposable
             Picture = formFile
         };
 
-        var expectedBlobUrl = "https://patientstorageaccount.blob.core.windows.net/patient-pictures/avatar-123.jpg";
+        var expectedBlobUrl = "https://patientstorageaccount.blob.core.windows.net/patient-pictures/avatar-123.jpg?sig=shortlived";
         var expectedBlobName = "avatar-123.jpg";
 
         _blobStorageMock.Setup(b => b.UploadAsync(
@@ -76,8 +77,15 @@ public class PatientServiceTests : IDisposable
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(new BlobUploadResult(expectedBlobName, expectedBlobUrl, "image/jpeg", fakeFileContent.Length));
 
+        _blobStorageMock.Setup(b => b.GetReadSasUrl(
+                expectedBlobName,
+                It.IsAny<TimeSpan?>(),
+                It.IsAny<string?>()))
+            .Returns(expectedBlobUrl);
+
         _emailServiceMock.Setup(e => e.SendPatientWelcomeEmailAsync(
                 It.IsAny<Patient>(),
+                It.IsAny<string?>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
@@ -92,12 +100,10 @@ public class PatientServiceTests : IDisposable
         result.Email.Should().Be("john.doe@example.com");
         result.ProfilePictureUrl.Should().Be(expectedBlobUrl);
 
-        // Verify entity in DB
         var savedPatient = await _dbContext.Patients.FindAsync(result.Id);
         savedPatient.Should().NotBeNull();
         savedPatient!.ProfilePictureBlobName.Should().Be(expectedBlobName);
 
-        // Verify Azure Blob Storage upload was invoked
         _blobStorageMock.Verify(b => b.UploadAsync(
             It.IsAny<Stream>(),
             "avatar.jpg",
@@ -105,9 +111,9 @@ public class PatientServiceTests : IDisposable
             It.IsAny<string?>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
-        // Verify Dummy Email dispatch was invoked
         _emailServiceMock.Verify(e => e.SendPatientWelcomeEmailAsync(
             It.Is<Patient>(p => p.Id == result.Id && p.Email == "john.doe@example.com"),
+            It.IsAny<string?>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -176,7 +182,7 @@ public class PatientServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task DeletePatientAsync_RemovesFromDatabase()
+    public async Task DeletePatientAsync_SoftDeletesAndPreservesAuditRecord()
     {
         // Arrange
         var patient = new Patient
@@ -191,16 +197,81 @@ public class PatientServiceTests : IDisposable
         _dbContext.Patients.Add(patient);
         await _dbContext.SaveChangesAsync();
 
-        _blobStorageMock.Setup(b => b.DeleteAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
-
         // Act
         var deleted = await _patientService.DeletePatientAsync(patient.Id);
 
         // Assert
         deleted.Should().BeTrue();
-        (await _dbContext.Patients.FindAsync(patient.Id)).Should().BeNull();
-        _blobStorageMock.Verify(b => b.DeleteAsync("sarah.jpg", null, It.IsAny<CancellationToken>()), Times.Once);
+        (await _dbContext.Patients.FirstOrDefaultAsync(p => p.Id == patient.Id)).Should().BeNull();
+        var archived = await _dbContext.Patients.IgnoreQueryFilters().FirstOrDefaultAsync(p => p.Id == patient.Id);
+        archived.Should().NotBeNull();
+        archived!.IsDeleted.Should().BeTrue();
+        archived.DeletedAtUtc.Should().NotBeNull();
+        _blobStorageMock.Verify(b => b.DeleteAsync("sarah.jpg", null, It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task GetPatientsAsync_WhenDoctorAuthenticated_ReturnsOnlyOwnAssignedPatients()
+    {
+        // Arrange
+        _dbContext.Patients.AddRange(
+            new Patient { FirstName = "Doc1", LastName = "Patient", Email = "d1@example.com", Age = 30, Gender = "Female", PrimaryDoctorId = 1 },
+            new Patient { FirstName = "Doc2", LastName = "Patient", Email = "d2@example.com", Age = 40, Gender = "Male", PrimaryDoctorId = 2 }
+        );
+        await _dbContext.SaveChangesAsync();
+
+        var doctorUser = new Mock<ICurrentUserService>();
+        doctorUser.SetupGet(u => u.IsAuthenticated).Returns(true);
+        doctorUser.SetupGet(u => u.UserId).Returns(10);
+        doctorUser.SetupGet(u => u.Role).Returns(UserRole.Doctor);
+        doctorUser.SetupGet(u => u.DoctorId).Returns(1);
+
+        var scopedService = new PatientService(_dbContext, _blobStorageMock.Object, _emailServiceMock.Object, _loggerMock.Object, doctorUser.Object);
+
+        // Act
+        var result = await scopedService.GetPatientsAsync(new PatientFilterParams());
+
+        // Assert
+        result.TotalCount.Should().Be(1);
+        result.Items.Single().FirstName.Should().Be("Doc1");
+
+        // Accessing Doctor #2's patient directly throws ForbiddenAccessException
+        var otherPatient = await _dbContext.Patients.FirstAsync(p => p.PrimaryDoctorId == 2);
+        await Assert.ThrowsAsync<ForbiddenAccessException>(() => scopedService.GetPatientByIdAsync(otherPatient.Id));
+    }
+
+    [Fact]
+    public async Task UpdatePatientAsync_WithStaleRowVersion_ThrowsDbUpdateConcurrencyException()
+    {
+        // Arrange
+        var initialVersion = new byte[] { 1, 0, 0, 0, 0, 0, 0, 1 };
+        var staleVersion = new byte[] { 1, 0, 0, 0, 0, 0, 0, 0 };
+
+        var patient = new Patient
+        {
+            FirstName = "Elena",
+            LastName = "Gilbert",
+            Email = "elena@example.com",
+            Age = 29,
+            Gender = "Female",
+            RowVersion = initialVersion
+        };
+        _dbContext.Patients.Add(patient);
+        await _dbContext.SaveChangesAsync();
+
+        var updateDto = new UpdatePatientDto
+        {
+            FirstName = "Elena",
+            LastName = "Gilbert",
+            Email = "elena@example.com",
+            Age = 30,
+            Gender = "Female",
+            RowVersion = Convert.ToBase64String(staleVersion)
+        };
+
+        // Act & Assert
+        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() =>
+            _patientService.UpdatePatientAsync(patient.Id, updateDto));
     }
 
     public void Dispose()

@@ -34,7 +34,7 @@ public class DummyEmailServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task SendPatientWelcomeEmailAsync_DispatchesEmailAndAuditsInDatabase()
+    public async Task SendPatientWelcomeEmailAsync_DispatchesEmailAndAuditsWithoutLeakingCredentials()
     {
         // Arrange
         var patient = new Patient
@@ -48,24 +48,26 @@ public class DummyEmailServiceTests : IDisposable
             ProfilePictureUrl = "https://example.com/grace.jpg",
             CreatedAtUtc = DateTime.UtcNow
         };
+        var setupLink = "https://portal.example.com/set-password?token=one-time-token-123";
 
         // Act
-        var result = await _emailService.SendPatientWelcomeEmailAsync(patient);
+        var result = await _emailService.SendPatientWelcomeEmailAsync(patient, setupLink);
 
         // Assert
         result.Should().BeTrue();
 
-        // Verify sent email log in memory
         var sentEmails = await _emailService.GetSentEmailsAsync();
         sentEmails.Should().Contain(e => e.RecipientEmail == "grace.hopper@navy.mil" && e.PatientId == 101);
 
-        // Verify audit log persisted in database
         var auditEntry = await _dbContext.EmailAuditLogs
             .FirstOrDefaultAsync(e => e.RecipientEmail == "grace.hopper@navy.mil");
 
         auditEntry.Should().NotBeNull();
         auditEntry!.Subject.Should().Contain("Registration Confirmed");
         auditEntry.Body.Should().Contain("Dear Grace Hopper");
+        auditEntry.Body.Should().Contain("one-time-token-123");
+        auditEntry.Body.Should().NotContain("Temporary Password");
+        auditEntry.Body.Should().NotContain("Patient Credentials");
         auditEntry.Status.Should().Contain("Delivered");
     }
 
