@@ -163,7 +163,22 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             }
         };
 
-        var rawJson = await PostGenerateContentAsync(modelToUse, payload, cancellationToken);
+        string rawJson;
+        string usedModel;
+        try
+        {
+            (rawJson, usedModel) = await PostGenerateContentWithFallbackAsync(modelToUse, payload, cancellationToken);
+        }
+        catch (GeminiUpstreamUnavailableException ex)
+        {
+            _logger.LogWarning(ex, "Live Gemini summary unavailable for patient #{PatientId}; returning fallback simulated summary.", patientId);
+            var simFallback = BuildSimulatedLiveSummary(patient, sanitizedPayload, citations);
+            simFallback.AiGeneratedSummary = $"[Fallback Mode — Google Gemini temporarily unavailable (503/429)] {simFallback.AiGeneratedSummary}";
+            simFallback.ModelUsed = "fallback-simulated";
+            await LogAiInteractionAsync("live-summary", patientId, prompt, null, simFallback.AiGeneratedSummary, "fallback-simulated", true, sw.ElapsedMilliseconds, cancellationToken);
+            return simFallback;
+        }
+
         var text = ExtractGeminiText(rawJson);
 
         var result = new LivePatientSummaryResponseDto
@@ -174,7 +189,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             SourceCitations = citations,
             SanitizedClinicalDataUsed = sanitizedPayload,
             IsSimulatedMode = false,
-            ModelUsed = modelToUse,
+            ModelUsed = usedModel,
             GeneratedAtUtc = DateTime.UtcNow
         };
 
@@ -194,7 +209,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             result.AiGeneratedSummary = text;
         }
 
-        await LogAiInteractionAsync("live-summary", patientId, prompt, null, result.AiGeneratedSummary, modelToUse, false, sw.ElapsedMilliseconds, cancellationToken);
+        await LogAiInteractionAsync("live-summary", patientId, prompt, null, result.AiGeneratedSummary, usedModel, false, sw.ElapsedMilliseconds, cancellationToken);
         return result;
     }
 
@@ -274,7 +289,21 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             }
         };
 
-        var rawJson = await PostGenerateContentAsync(modelToUse, payload, cancellationToken);
+        string rawJson;
+        string usedModel;
+        try
+        {
+            (rawJson, usedModel) = await PostGenerateContentWithFallbackAsync(modelToUse, payload, cancellationToken);
+        }
+        catch (GeminiUpstreamUnavailableException ex)
+        {
+            _logger.LogWarning(ex, "Live Gemini triage unavailable; falling back to local rule/simulated triage.");
+            var simFallback = BuildSimulatedTriage(request);
+            simFallback.TriageNotes = $"[Fallback Mode — Google Gemini temporarily unavailable (503/429)] {simFallback.TriageNotes}";
+            await LogAiInteractionAsync("triage", null, sanitizedPrompt, null, simFallback.TriageNotes, "fallback-simulated", true, sw.ElapsedMilliseconds, cancellationToken);
+            return simFallback;
+        }
+
         var text = ExtractGeminiText(rawJson);
 
         var triage = new AiTriageResponseDto { IsSimulatedMode = false, AnalyzedAtUtc = DateTime.UtcNow };
@@ -294,7 +323,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             triage.TriageNotes = text;
         }
 
-        await LogAiInteractionAsync("triage", null, sanitizedPrompt, null, triage.TriageNotes, modelToUse, false, sw.ElapsedMilliseconds, cancellationToken);
+        await LogAiInteractionAsync("triage", null, sanitizedPrompt, null, triage.TriageNotes, usedModel, false, sw.ElapsedMilliseconds, cancellationToken);
         return triage;
     }
 
@@ -334,14 +363,28 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         }
 
         string reply;
-        if (!HasLiveApiKey)
+        bool isSimulated = !HasLiveApiKey;
+        if (isSimulated)
         {
             reply = await RunSimulatedChatAsync(request, toolsExecuted, pendingProposals, cancellationToken);
             modelToUse = "local-simulated";
         }
         else
         {
-            reply = await RunLiveGeminiChatWithToolsAsync(session, request, modelToUse, toolsExecuted, pendingProposals, cancellationToken);
+            try
+            {
+                (reply, modelToUse) = await RunLiveGeminiChatWithToolsAsync(session, request, modelToUse, toolsExecuted, pendingProposals, cancellationToken);
+            }
+            catch (GeminiUpstreamUnavailableException ex)
+            {
+                _logger.LogWarning(ex, "Live Gemini chat models unavailable; falling back to local simulated assistant.");
+                isSimulated = true;
+                toolsExecuted.Clear();
+                pendingProposals.Clear();
+                reply = $"[Fallback Mode — Google Gemini temporarily unavailable (503/429)] " +
+                        await RunSimulatedChatAsync(request, toolsExecuted, pendingProposals, cancellationToken);
+                modelToUse = "fallback-simulated";
+            }
         }
 
         await AppendSessionMessagesAsync(session, request.Message, reply, cancellationToken);
@@ -352,7 +395,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             JsonSerializer.Serialize(toolsExecuted),
             reply,
             modelToUse,
-            !HasLiveApiKey,
+            isSimulated,
             sw.ElapsedMilliseconds,
             cancellationToken);
 
@@ -363,7 +406,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             ToolsExecuted = toolsExecuted,
             PendingActions = pendingProposals,
             SourceCitations = citations,
-            IsSimulatedMode = !HasLiveApiKey,
+            IsSimulatedMode = isSimulated,
             ModelUsed = modelToUse,
             Timestamp = DateTime.UtcNow
         };
@@ -409,15 +452,14 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             yield break;
         }
 
-        // If pending proposals or tools might be needed, run tool-aware ChatAsync and stream result cleanly,
-        // or stream directly via Gemini streamGenerateContent when no mutation tools are needed
-        var modelToUse = ResolveModel(request.Model);
+        // If pending proposals or tools might be needed, run tool-aware ChatAsync and stream result cleanly
         var fullResponse = await ChatAsync(request, cancellationToken);
         yield return FormatSseEvent("meta", new
         {
             sessionId = fullResponse.SessionId,
-            isSimulatedMode = false,
-            modelUsed = modelToUse,
+            isSimulatedMode = fullResponse.IsSimulatedMode,
+            simulatedModeNotice = fullResponse.SimulatedModeNotice,
+            modelUsed = fullResponse.ModelUsed,
             toolsExecuted = fullResponse.ToolsExecuted,
             pendingActions = fullResponse.PendingActions,
             sourceCitations = fullResponse.SourceCitations
@@ -490,7 +532,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
 
     // ==================== PRIVATE HELPERS ====================
 
-    private async Task<string> RunLiveGeminiChatWithToolsAsync(
+    private async Task<(string Reply, string ModelUsed)> RunLiveGeminiChatWithToolsAsync(
         AiChatSession session,
         AiChatRequestDto request,
         string modelToUse,
@@ -522,6 +564,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         });
 
         var tools = BuildLeastPrivilegeToolDeclarations();
+        var effectiveModel = modelToUse;
 
         for (int turn = 0; turn < 4; turn++)
         {
@@ -536,7 +579,9 @@ public class GeminiPatientAgentService : IAiPatientAgentService
                 ["generationConfig"] = new JsonObject { ["temperature"] = 0.2 }
             };
 
-            var raw = await PostGenerateContentAsync(modelToUse, payload, cancellationToken);
+            var (raw, usedModel) = await PostGenerateContentWithFallbackAsync(effectiveModel, payload, cancellationToken);
+            effectiveModel = usedModel;
+
             using var doc = JsonDocument.Parse(raw);
             var candidate = doc.RootElement.GetProperty("candidates")[0];
             var content = candidate.GetProperty("content");
@@ -545,9 +590,10 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             var functionCalls = parts.EnumerateArray().Where(p => p.TryGetProperty("functionCall", out _)).ToList();
             if (functionCalls.Count == 0)
             {
-                return string.Join("\n", parts.EnumerateArray()
+                var replyText = string.Join("\n", parts.EnumerateArray()
                     .Where(p => p.TryGetProperty("text", out _))
                     .Select(p => p.GetProperty("text").GetString()));
+                return (replyText, effectiveModel);
             }
 
             contents.Add(JsonNode.Parse(content.GetRawText()));
@@ -575,7 +621,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             contents.Add(new JsonObject { ["role"] = "function", ["parts"] = toolResponses });
         }
 
-        return "Tool execution completed. Please review the proposed actions or clinical findings above.";
+        return ("Tool execution completed. Please review the proposed actions or clinical findings above.", effectiveModel);
     }
 
     private async Task<object> ExecuteSafeToolAsync(
@@ -741,20 +787,75 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         return $"[Simulated Mode] You have access to {list.TotalCount} patient record(s). Select a patient context ID to inspect consultations or propose an appointment.";
     }
 
-    private async Task<string> PostGenerateContentAsync(string model, object payload, CancellationToken cancellationToken)
-    {
-        var endpoint = $"{_baseUrl}/models/{model}:generateContent?key={_configuredApiKey}";
-        using var response = await _httpClient.PostAsJsonAsync(endpoint, payload, cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+    private static readonly string[] FallbackCandidateModels =
+    [
+        "gemini-flash-lite-latest",
+        "gemini-2.5-flash-lite",
+        "gemini-3.8-flash",
+        "gemini-flash-latest"
+    ];
 
-        if (!response.IsSuccessStatusCode)
+    private async Task<(string Body, string ModelUsed)> PostGenerateContentWithFallbackAsync(
+        string primaryModel,
+        object payload,
+        CancellationToken cancellationToken)
+    {
+        var candidates = new List<string> { primaryModel };
+        foreach (var candidate in FallbackCandidateModels)
         {
-            _logger.LogError("Gemini API error ({Status}): {Body}", response.StatusCode, body);
-            throw new InvalidOperationException($"Google Gemini API returned {(int)response.StatusCode} ({response.StatusCode}).");
+            if (!candidates.Contains(candidate, StringComparer.OrdinalIgnoreCase))
+            {
+                candidates.Add(candidate);
+            }
         }
 
-        return body;
+        string? lastErrorStatus = null;
+
+        foreach (var candidateModel in candidates)
+        {
+            var endpoint = $"{_baseUrl}/models/{candidateModel}:generateContent?key={_configuredApiKey}";
+            try
+            {
+                using var response = await _httpClient.PostAsJsonAsync(endpoint, payload, cancellationToken);
+                var body = await response.Content.ReadAsStringAsync(cancellationToken);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    if (!string.Equals(candidateModel, primaryModel, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.LogInformation(
+                            "Gemini primary model {PrimaryModel} was unavailable; succeeded with fallback model {FallbackModel}.",
+                            primaryModel, candidateModel);
+                    }
+
+                    return (body, candidateModel);
+                }
+
+                var code = (int)response.StatusCode;
+                if (code == 503 || code == 404 || code == 429)
+                {
+                    lastErrorStatus = $"{code} ({response.StatusCode})";
+                    _logger.LogWarning(
+                        "Gemini model {Model} returned {Status}; trying next fallback model. Details: {Body}",
+                        candidateModel, lastErrorStatus, body);
+                    continue;
+                }
+
+                _logger.LogError("Gemini API error ({Status}): {Body}", response.StatusCode, body);
+                throw new InvalidOperationException($"Google Gemini API returned {code} ({response.StatusCode}).");
+            }
+            catch (HttpRequestException ex)
+            {
+                lastErrorStatus = ex.Message;
+                _logger.LogWarning(ex, "Transient HTTP error calling Gemini model {Model}; trying next fallback.", candidateModel);
+            }
+        }
+
+        throw new GeminiUpstreamUnavailableException(
+            $"All Gemini candidate models returned transient errors (last status: {lastErrorStatus ?? "503 ServiceUnavailable"}).");
     }
+
+    private sealed class GeminiUpstreamUnavailableException(string message) : Exception(message);
 
     private static string ExtractGeminiText(string rawJson)
     {

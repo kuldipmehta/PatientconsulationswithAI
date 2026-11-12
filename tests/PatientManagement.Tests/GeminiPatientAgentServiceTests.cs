@@ -409,6 +409,113 @@ public class GeminiPatientAgentServiceTests : IDisposable
         _consultationServiceMock.Verify(c => c.CreateConsultationAsync(It.IsAny<CreateConsultationDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    [Fact]
+    public async Task ChatAsync_WhenPrimaryModelReturns503_AutomaticallyFallsBackToLiteModel()
+    {
+        // Arrange
+        var seenModels = new List<string>();
+        var handler = new StubHttpMessageHandler((req, _) =>
+        {
+            var url = req.RequestUri!.ToString();
+            seenModels.Add(url);
+
+            if (url.Contains("gemini-flash-latest"))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                {
+                    Content = new StringContent("{\"error\":{\"code\":503,\"status\":\"UNAVAILABLE\"}}", Encoding.UTF8, "application/json")
+                });
+            }
+
+            var okJson = JsonSerializer.Serialize(new
+            {
+                candidates = new[]
+                {
+                    new { content = new { parts = new[] { new { text = "Fallback model succeeded cleanly." } } } }
+                }
+            });
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(okJson, Encoding.UTF8, "application/json")
+            });
+        });
+
+        var liveConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "Gemini:ApiKey", "test-mock-key-offline" },
+                { "Gemini:Model", "gemini-flash-latest" }
+            })
+            .Build();
+
+        var liveAgent = new GeminiPatientAgentService(
+            new HttpClient(handler),
+            _dbContext,
+            liveConfig,
+            _patientServiceMock.Object,
+            _consultationServiceMock.Object,
+            _doctorServiceMock.Object,
+            _loggerMock.Object);
+
+        // Act
+        var response = await liveAgent.ChatAsync(new AiChatRequestDto { Message = "Hello assistant" });
+
+        // Assert
+        response.IsSimulatedMode.Should().BeFalse();
+        response.ModelUsed.Should().Be("gemini-flash-lite-latest");
+        response.Reply.Should().Be("Fallback model succeeded cleanly.");
+        seenModels.Should().Contain(u => u.Contains("gemini-flash-latest"));
+        seenModels.Should().Contain(u => u.Contains("gemini-flash-lite-latest"));
+    }
+
+    [Fact]
+    public async Task SummarizePatientLiveAsync_WhenAllModelsReturn503_DegradesGracefullyToSimulatedFallback()
+    {
+        // Arrange
+        _patientServiceMock.Setup(s => s.GetPatientByIdAsync(88, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PatientResponseDto
+            {
+                Id = 88,
+                FirstName = "Test",
+                LastName = "Patient",
+                Age = 45,
+                Gender = "Male",
+                MedicalNotes = "Mild hypertension"
+            });
+
+        var handler = new StubHttpMessageHandler((_, _) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+            {
+                Content = new StringContent("{\"error\":{\"code\":503}}", Encoding.UTF8, "application/json")
+            }));
+
+        var liveConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "Gemini:ApiKey", "test-mock-key-offline" },
+                { "Gemini:Model", "gemini-flash-latest" }
+            })
+            .Build();
+
+        var liveAgent = new GeminiPatientAgentService(
+            new HttpClient(handler),
+            _dbContext,
+            liveConfig,
+            _patientServiceMock.Object,
+            _consultationServiceMock.Object,
+            _doctorServiceMock.Object,
+            _loggerMock.Object);
+
+        // Act
+        var summary = await liveAgent.SummarizePatientLiveAsync(88);
+
+        // Assert
+        summary.IsSimulatedMode.Should().BeTrue();
+        summary.ModelUsed.Should().Be("fallback-simulated");
+        summary.AiGeneratedSummary.Should().Contain("Fallback Mode");
+        summary.SimulatedModeNotice.Should().Contain("SIMULATED MODE ACTIVE");
+    }
+
     public void Dispose()
     {
         _dbContext.Database.EnsureDeleted();

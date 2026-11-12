@@ -47,11 +47,11 @@ public static class DependencyInjection
         })
         .AddStandardResilienceHandler(options =>
         {
-            options.Retry.MaxRetryAttempts = 3;
+            options.Retry.MaxRetryAttempts = 1;
             options.Retry.UseJitter = true;
-            options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(25);
-            options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(75);
-            options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(60);
+            options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(15);
+            options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(45);
+            options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(45);
         });
 
         return services;
