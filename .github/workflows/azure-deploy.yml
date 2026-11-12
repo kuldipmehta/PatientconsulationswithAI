@@ -1,62 +1,109 @@
-name: Build, Test and Deploy to Azure App Service
+name: CI/CD — Build, Test, Coverage & Azure Deploy
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
   pull_request:
-    branches: [ "main" ]
-  workflow_dispatch:
-
-env:
-  AZURE_WEBAPP_NAME: 'app-patientmgmt-demo'
-  DOTNET_VERSION: '10.0.x'
+    branches:
+      - main
 
 jobs:
-  build-and-test:
+  backend-build-and-test:
+    name: .NET 10 Build, Test & Coverage
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: ${{ env.DOTNET_VERSION }}
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
 
-    - name: Restore dependencies
-      run: dotnet restore PatientManagement.sln
+      - name: Restore dependencies
+        run: dotnet restore PatientManagement.slnx
 
-    - name: Build Solution
-      run: dotnet build PatientManagement.sln --configuration Release --no-restore
+      - name: Build solution
+        run: dotnet build PatientManagement.slnx --no-restore --configuration Release
 
-    - name: Run Unit & Integration Tests
-      run: dotnet test PatientManagement.sln --configuration Release --no-build --verbosity normal
+      - name: Run unit, integration & 28-case AI evaluation suite with coverage
+        run: dotnet test PatientManagement.slnx --no-build --configuration Release --collect:"XPlat Code Coverage" --results-directory ./TestResults --verbosity normal
 
-    - name: Publish .NET 10 API
-      run: dotnet publish src/PatientManagement.Api/PatientManagement.Api.csproj -c Release -o ./publish /p:UseAppHost=false
+      - name: Upload .NET code coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: ./TestResults/**/coverage.cobertura.xml
 
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: webapp-publish
-        path: ./publish
+      - name: Publish API artifact
+        run: dotnet publish src/PatientManagement.Api/PatientManagement.Api.csproj --no-restore --configuration Release --output ./publish
 
-  deploy:
-    needs: build-and-test
+      - name: Generate idempotent SQL migration script (separate deployment step)
+        run: |
+          dotnet tool install --global dotnet-ef --version 10.* || dotnet tool update --global dotnet-ef --version 10.*
+          echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+          "$HOME/.dotnet/tools/dotnet-ef" migrations script --idempotent --project src/PatientManagement.Infrastructure --startup-project src/PatientManagement.Api --output ./publish/migrations.sql
+
+      - name: Upload API & SQL migration bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-publish-artifact
+          path: ./publish
+
+  frontend-build-and-test:
+    name: Angular 19 Lint, Test & Build
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    defaults:
+      run:
+        working-directory: frontend
 
     steps:
-    - name: Download Artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: webapp-publish
-        path: ./publish
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Deploy to Azure App Service
-      uses: azure/webapps-deploy@v3
-      with:
-        app-name: ${{ env.AZURE_WEBAPP_NAME }}
-        publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-        package: ./publish
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install npm packages
+        run: npm ci
+
+      - name: TypeScript type-check & lint
+        run: npm run lint
+
+      - name: Run Angular unit tests (ChromeHeadless)
+        run: npm test
+
+      - name: Build production Angular bundle
+        run: npm run build
+
+      - name: Upload Angular dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+  deploy-azure:
+    name: Deploy to Azure App Service
+    needs: [backend-build-and-test, frontend-build-and-test]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AZURE_WEBAPP_NAME != ''
+
+    steps:
+      - name: Download API artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: api-publish-artifact
+          path: ./publish
+
+      - name: Deploy API to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: ./publish
