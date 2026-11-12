@@ -1,162 +1,275 @@
 import { Injectable, inject } from '@angular/core';
-import { HttpClient, HttpParams, HttpHeaders } from '@angular/common/http';
-import { Observable, catchError, map, of } from 'rxjs';
+import { HttpClient, HttpParams } from '@angular/common/http';
+import { Observable } from 'rxjs';
+import { AuthService } from '../core/auth.service';
 import {
+  AiChatResponse,
+  AiInteractionLog,
+  AiSourceCitation,
+  AiStatusInfo,
+  AiTriageResponse,
   ApiResponse,
-  PagedResult,
-  PatientSummary,
-  PatientDetail,
-  PatientFilterParams,
+  AuditLog,
   Consultation,
   CreateConsultationDto,
-  UpdateConsultationDto,
+  Doctor,
+  DoctorAvailability,
   EmailAuditLog,
   LivePatientSummary,
-  AiChatMessage,
-  AiChatResponse,
-  AiTriageResponse
+  PagedResult,
+  PatientDetail,
+  PatientFilterParams,
+  PatientSummary,
+  PendingActionProposal,
+  UpdateConsultationDto
 } from '../models/patient.models';
 
-@Injectable({
-  providedIn: 'root'
-})
+export interface SseChatEvent {
+  type: 'meta' | 'token' | 'done';
+  data: {
+    sessionId?: string;
+    isSimulatedMode?: boolean;
+    simulatedModeNotice?: string | null;
+    emergencyRuleTriggered?: boolean;
+    toolsExecuted?: string[];
+    pendingActions?: PendingActionProposal[];
+    sourceCitations?: AiSourceCitation[];
+    text?: string;
+    disclaimer?: string;
+  };
+}
+
+@Injectable({ providedIn: 'root' })
 export class ApiService {
-  private http = inject(HttpClient);
-  
-  // API URL - defaults to ASP.NET Core local server port 5056 or persisted URL
-  public baseUrl = localStorage.getItem('pm_api_url') || 'http://localhost:5056';
+  private readonly http = inject(HttpClient);
+  private readonly auth = inject(AuthService);
+  private readonly baseUrl = '/api';
 
-  setBaseUrl(url: string) {
-    this.baseUrl = url.replace(/\/$/, '');
-    localStorage.setItem('pm_api_url', this.baseUrl);
+  // ==================== HEALTH & DOCTORS ====================
+  getHealth(): Observable<Record<string, unknown>> {
+    return this.http.get<Record<string, unknown>>('/health');
   }
 
-  // Health Check with automatic fallback probe between port 5056 and 7102
-  checkHealth(): Observable<boolean> {
-    return this.http.get<{ status: string }>(`${this.baseUrl}/health`).pipe(
-      map(res => res.status === 'Healthy'),
-      catchError(() => {
-        // If current port failed, try alternate port automatically
-        const alternateUrl = this.baseUrl.includes('5056') 
-          ? 'https://localhost:7102' 
-          : 'http://localhost:5056';
-
-        return this.http.get<{ status: string }>(`${alternateUrl}/health`).pipe(
-          map(res => {
-            if (res.status === 'Healthy') {
-              this.setBaseUrl(alternateUrl);
-              return true;
-            }
-            return false;
-          }),
-          catchError(() => of(false))
-        );
-      })
-    );
+  getDoctors(): Observable<ApiResponse<Doctor[]>> {
+    return this.http.get<ApiResponse<Doctor[]>>(`${this.baseUrl}/doctors`);
   }
 
-  // ===================== PATIENTS =====================
-  getPatients(params?: PatientFilterParams): Observable<ApiResponse<PagedResult<PatientSummary>>> {
-    let httpParams = new HttpParams();
-    if (params?.searchTerm) httpParams = httpParams.set('searchTerm', params.searchTerm);
-    if (params?.gender) httpParams = httpParams.set('gender', params.gender);
-    if (params?.pageNumber) httpParams = httpParams.set('pageNumber', params.pageNumber.toString());
-    if (params?.pageSize) httpParams = httpParams.set('pageSize', params.pageSize.toString());
-    if (params?.sortBy) httpParams = httpParams.set('sortBy', params.sortBy);
-    if (params?.sortDescending !== undefined) httpParams = httpParams.set('sortDescending', params.sortDescending.toString());
+  getDoctorAvailability(doctorId: number, dateUtc: string): Observable<ApiResponse<DoctorAvailability>> {
+    const params = new HttpParams().set('dateUtc', dateUtc);
+    return this.http.get<ApiResponse<DoctorAvailability>>(`${this.baseUrl}/doctors/${doctorId}/availability`, { params });
+  }
 
-    return this.http.get<ApiResponse<PagedResult<PatientSummary>>>(`${this.baseUrl}/api/patients`, { params: httpParams });
+  // ==================== PATIENTS ====================
+  getPatients(filter: PatientFilterParams = {}): Observable<ApiResponse<PagedResult<PatientSummary>>> {
+    let params = new HttpParams();
+    if (filter.searchTerm) params = params.set('searchTerm', filter.searchTerm);
+    if (filter.gender) params = params.set('gender', filter.gender);
+    if (filter.pageNumber) params = params.set('pageNumber', filter.pageNumber);
+    if (filter.pageSize) params = params.set('pageSize', filter.pageSize);
+    if (filter.sortBy) params = params.set('sortBy', filter.sortBy);
+    if (filter.sortDescending !== undefined) params = params.set('sortDescending', filter.sortDescending);
+
+    return this.http.get<ApiResponse<PagedResult<PatientSummary>>>(`${this.baseUrl}/patients`, { params });
   }
 
   getPatientById(id: number): Observable<ApiResponse<PatientDetail>> {
-    return this.http.get<ApiResponse<PatientDetail>>(`${this.baseUrl}/api/patients/${id}`);
+    return this.http.get<ApiResponse<PatientDetail>>(`${this.baseUrl}/patients/${id}`);
+  }
+
+  fetchProtectedPictureBlob(url: string): Observable<Blob> {
+    return this.http.get(url, { responseType: 'blob' });
   }
 
   createPatient(formData: FormData): Observable<ApiResponse<PatientDetail>> {
-    return this.http.post<ApiResponse<PatientDetail>>(`${this.baseUrl}/api/patients`, formData);
+    return this.http.post<ApiResponse<PatientDetail>>(`${this.baseUrl}/patients`, formData);
   }
 
   updatePatient(id: number, formData: FormData): Observable<ApiResponse<PatientDetail>> {
-    return this.http.put<ApiResponse<PatientDetail>>(`${this.baseUrl}/api/patients/${id}`, formData);
+    return this.http.put<ApiResponse<PatientDetail>>(`${this.baseUrl}/patients/${id}`, formData);
   }
 
-  deletePatient(id: number): Observable<ApiResponse<boolean>> {
-    return this.http.delete<ApiResponse<boolean>>(`${this.baseUrl}/api/patients/${id}`);
+  deletePatient(id: number): Observable<ApiResponse<object>> {
+    return this.http.delete<ApiResponse<object>>(`${this.baseUrl}/patients/${id}`);
   }
 
-  // ===================== CONSULTATIONS =====================
+  // ==================== CONSULTATIONS ====================
   getConsultations(patientId?: number): Observable<ApiResponse<Consultation[]>> {
     let params = new HttpParams();
-    if (patientId) params = params.set('patientId', patientId.toString());
-    return this.http.get<ApiResponse<Consultation[]>>(`${this.baseUrl}/api/consultations`, { params });
-  }
-
-  getConsultationById(id: number): Observable<ApiResponse<Consultation>> {
-    return this.http.get<ApiResponse<Consultation>>(`${this.baseUrl}/api/consultations/${id}`);
+    if (patientId) params = params.set('patientId', patientId);
+    return this.http.get<ApiResponse<Consultation[]>>(`${this.baseUrl}/consultations`, { params });
   }
 
   createConsultation(dto: CreateConsultationDto): Observable<ApiResponse<Consultation>> {
-    return this.http.post<ApiResponse<Consultation>>(`${this.baseUrl}/api/consultations`, dto);
+    return this.http.post<ApiResponse<Consultation>>(`${this.baseUrl}/consultations`, dto);
   }
 
   updateConsultation(id: number, dto: UpdateConsultationDto): Observable<ApiResponse<Consultation>> {
-    return this.http.put<ApiResponse<Consultation>>(`${this.baseUrl}/api/consultations/${id}`, dto);
+    return this.http.put<ApiResponse<Consultation>>(`${this.baseUrl}/consultations/${id}`, dto);
   }
 
-  deleteConsultation(id: number): Observable<ApiResponse<boolean>> {
-    return this.http.delete<ApiResponse<boolean>>(`${this.baseUrl}/api/consultations/${id}`);
+  deleteConsultation(id: number): Observable<ApiResponse<object>> {
+    return this.http.delete<ApiResponse<object>>(`${this.baseUrl}/consultations/${id}`);
   }
 
-  // ===================== EMAIL AUDIT LOGS =====================
+  // ==================== EMAIL & AUDIT LOGS ====================
   getEmailLogs(): Observable<ApiResponse<EmailAuditLog[]>> {
-    return this.http.get<ApiResponse<EmailAuditLog[]>>(`${this.baseUrl}/api/emails/logs`);
+    return this.http.get<ApiResponse<EmailAuditLog[]>>(`${this.baseUrl}/emails/logs`);
   }
 
-  // ===================== AI AGENT =====================
-  getAiStatus(): Observable<ApiResponse<any>> {
-    return this.http.get<ApiResponse<any>>(`${this.baseUrl}/api/ai/status`);
+  getAuditLogs(take = 100): Observable<ApiResponse<AuditLog[]>> {
+    return this.http.get<ApiResponse<AuditLog[]>>(`${this.baseUrl}/audit`, {
+      params: new HttpParams().set('take', take)
+    });
   }
 
-  getAiModels(apiKey?: string): Observable<ApiResponse<string[]>> {
-    let headers = new HttpHeaders();
-    if (apiKey) headers = headers.set('X-Gemini-ApiKey', apiKey);
-    return this.http.get<ApiResponse<string[]>>(`${this.baseUrl}/api/ai/models`, { headers });
+  getAiInteractionLogs(take = 100): Observable<ApiResponse<AiInteractionLog[]>> {
+    return this.http.get<ApiResponse<AiInteractionLog[]>>(`${this.baseUrl}/audit/ai`, {
+      params: new HttpParams().set('take', take)
+    });
   }
 
-  getLivePatientSummary(patientId: number, customInstructions?: string, apiKey?: string, model?: string): Observable<ApiResponse<LivePatientSummary>> {
-    let headers = new HttpHeaders();
-    if (apiKey) headers = headers.set('X-Gemini-ApiKey', apiKey);
-
-    const body: any = {};
-    if (customInstructions) body.customInstructions = customInstructions;
-    if (apiKey) body.apiKey = apiKey;
-    if (model) body.model = model;
-
-    return this.http.post<ApiResponse<LivePatientSummary>>(`${this.baseUrl}/api/ai/patients/${patientId}/live-summary`, body, { headers });
+  // ==================== CLINICAL AI AGENT ====================
+  getAiStatus(): Observable<ApiResponse<AiStatusInfo>> {
+    return this.http.get<ApiResponse<AiStatusInfo>>(`${this.baseUrl}/ai/status`);
   }
 
-  chatWithAi(message: string, history?: AiChatMessage[], patientContextId?: number, apiKey?: string, model?: string): Observable<ApiResponse<AiChatResponse>> {
-    let headers = new HttpHeaders();
-    if (apiKey) headers = headers.set('X-Gemini-ApiKey', apiKey);
-
-    const body: any = { message };
-    if (history && history.length > 0) body.conversationHistory = history;
-    if (patientContextId) body.patientContextId = patientContextId;
-    if (apiKey) body.apiKey = apiKey;
-    if (model) body.model = model;
-
-    return this.http.post<ApiResponse<AiChatResponse>>(`${this.baseUrl}/api/ai/chat`, body, { headers });
+  getAiModels(): Observable<ApiResponse<string[]>> {
+    return this.http.get<ApiResponse<string[]>>(`${this.baseUrl}/ai/models`);
   }
 
-  triageSymptoms(symptoms: string, patientAge?: number, gender?: string, conditions?: string, apiKey?: string, model?: string): Observable<ApiResponse<AiTriageResponse>> {
-    let headers = new HttpHeaders();
-    if (apiKey) headers = headers.set('X-Gemini-ApiKey', apiKey);
+  getLivePatientSummary(patientId: number, customInstructions?: string, model?: string): Observable<ApiResponse<LivePatientSummary>> {
+    return this.http.post<ApiResponse<LivePatientSummary>>(
+      `${this.baseUrl}/ai/patients/${patientId}/live-summary`,
+      {
+        customInstructions: customInstructions || undefined,
+        model: model || undefined
+      }
+    );
+  }
 
-    const body: any = { symptoms };
-    if (patientAge !== undefined && patientAge !== null) body.patientAge = patientAge;
-    if (gender) body.gender = gender;
-    if (conditions) body.existingConditions = conditions;
+  chatWithAgent(message: string, sessionId?: string, patientContextId?: number | null, model?: string): Observable<ApiResponse<AiChatResponse>> {
+    return this.http.post<ApiResponse<AiChatResponse>>(`${this.baseUrl}/ai/chat`, {
+      message,
+      sessionId: sessionId || undefined,
+      patientContextId: patientContextId || undefined,
+      model: model || undefined
+    });
+  }
 
-    return this.http.post<ApiResponse<AiTriageResponse>>(`${this.baseUrl}/api/ai/triage`, body, { headers });
+  streamChatWithAgent(
+    message: string,
+    sessionId?: string,
+    patientContextId?: number | null,
+    model?: string
+  ): Observable<SseChatEvent> {
+    return new Observable<SseChatEvent>(subscriber => {
+      const controller = new AbortController();
+      const token = this.auth.token();
+
+      fetch(`${this.baseUrl}/ai/chat/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          message,
+          sessionId: sessionId || undefined,
+          patientContextId: patientContextId || undefined,
+          model: model || undefined
+        }),
+        signal: controller.signal
+      })
+        .then(async response => {
+          if (!response.ok || !response.body) {
+            throw new Error(`Streaming failed with status ${response.status}`);
+          }
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const blocks = buffer.split('\n\n');
+            buffer = blocks.pop() ?? '';
+
+            for (const block of blocks) {
+              const event = this.parseSseBlock(block);
+              if (event) {
+                subscriber.next(event);
+              }
+            }
+          }
+
+          if (buffer.trim()) {
+            const trailing = this.parseSseBlock(buffer);
+            if (trailing) subscriber.next(trailing);
+          }
+          subscriber.complete();
+        })
+        .catch(err => {
+          if (!controller.signal.aborted) {
+            subscriber.error(err);
+          }
+        });
+
+      return () => controller.abort();
+    });
+  }
+
+  confirmPendingAiAction(actionId: string): Observable<ApiResponse<Consultation>> {
+    return this.http.post<ApiResponse<Consultation>>(`${this.baseUrl}/ai/actions/${encodeURIComponent(actionId)}/confirm`, {});
+  }
+
+  cancelPendingAiAction(actionId: string): Observable<ApiResponse<boolean>> {
+    return this.http.post<ApiResponse<boolean>>(`${this.baseUrl}/ai/actions/${encodeURIComponent(actionId)}/cancel`, {});
+  }
+
+  triageSymptoms(
+    symptoms: string,
+    patientAge?: number | null,
+    gender?: string,
+    existingConditions?: string,
+    model?: string
+  ): Observable<ApiResponse<AiTriageResponse>> {
+    const params = model ? new HttpParams().set('model', model) : undefined;
+    return this.http.post<ApiResponse<AiTriageResponse>>(
+      `${this.baseUrl}/ai/triage`,
+      {
+        symptoms,
+        patientAge: patientAge || undefined,
+        gender: gender || undefined,
+        existingConditions: existingConditions || undefined
+      },
+      { params }
+    );
+  }
+
+  private parseSseBlock(block: string): SseChatEvent | null {
+    const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
+    let eventType: 'meta' | 'token' | 'done' = 'token';
+    let dataLine = '';
+
+    for (const line of lines) {
+      if (line.startsWith('event:')) {
+        const typeStr = line.slice(6).trim();
+        if (typeStr === 'meta' || typeStr === 'token' || typeStr === 'done') {
+          eventType = typeStr;
+        }
+      } else if (line.startsWith('data:')) {
+        dataLine += line.slice(5).trim();
+      }
+    }
+
+    if (!dataLine) return null;
+    try {
+      return { type: eventType, data: JSON.parse(dataLine) };
+    } catch {
+      return null;
+    }
   }
 }
