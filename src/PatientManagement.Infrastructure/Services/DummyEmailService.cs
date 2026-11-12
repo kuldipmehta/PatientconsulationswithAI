@@ -20,13 +20,24 @@ public class DummyEmailService : IEmailService
         _scopeFactory = scopeFactory;
     }
 
-    public async Task<bool> SendPatientWelcomeEmailAsync(Patient patient, CancellationToken cancellationToken = default)
+    public async Task<bool> SendPatientWelcomeEmailAsync(
+        Patient patient,
+        string? oneTimeSetupLink = null,
+        CancellationToken cancellationToken = default)
     {
         var subject = $"Welcome to Patient Care Portal - Registration Confirmed (ID: #{patient.Id})";
 
+        var onboardingSection = string.IsNullOrWhiteSpace(oneTimeSetupLink)
+            ? "To activate portal access, please request a one-time account setup link from reception."
+            : $"""
+               Complete Your Portal Setup (One-Time Link, Valid for 24 Hours):
+               {oneTimeSetupLink}
+               (For your security, passwords are never sent by email.)
+               """;
+
         var body = $"""
             ====================================================================================
-            [PATIENT CARE PORTAL - WELCOME EMAIL NOTIFICATION]
+            [PATIENT CARE PORTAL - WELCOME NOTIFICATION]
             ====================================================================================
             Date: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC
             To: {patient.FirstName} {patient.LastName} <{patient.Email}>
@@ -34,22 +45,15 @@ public class DummyEmailService : IEmailService
 
             Dear {patient.FirstName} {patient.LastName},
 
-            Welcome to our Healthcare Portal! Your patient record has been successfully registered.
+            Your patient profile has been successfully registered with Patient Care Portal.
 
-            Profile Details:
+            Registration Summary:
             -----------------------------------------
             - Patient ID: #{patient.Id}
             - Full Name: {patient.FirstName} {patient.LastName}
-            - Email: {patient.Email}
-            - Phone: {patient.PhoneNumber ?? "Not provided"}
-            - Age: {patient.Age}
-            - Gender: {patient.Gender}
-            - Date of Birth: {(patient.DateOfBirth.HasValue ? patient.DateOfBirth.Value.ToString("yyyy-MM-dd") : "Not specified")}
-            - Profile Picture: {(string.IsNullOrEmpty(patient.ProfilePictureUrl) ? "None (Default avatar)" : patient.ProfilePictureUrl)}
             - Registered On: {patient.CreatedAtUtc:yyyy-MM-dd HH:mm:ss} UTC
 
-            If you have any questions or need to schedule a consultation, please contact
-            our support team or log into your portal account.
+            {onboardingSection}
 
             Warm regards,
             Patient Management Team
@@ -57,6 +61,24 @@ public class DummyEmailService : IEmailService
             """;
 
         return await SendEmailAsync(patient.Email, subject, body, patient.Id, cancellationToken);
+    }
+
+    public async Task<bool> SendPasswordSetupEmailAsync(
+        AppUser user,
+        string oneTimeSetupLink,
+        CancellationToken cancellationToken = default)
+    {
+        var subject = "Set Your Patient Care Portal Password (One-Time Link)";
+        var body = $"""
+            Hello {user.FullName},
+
+            Use the one-time secure link below to set your password (valid for 24 hours):
+            {oneTimeSetupLink}
+
+            If you did not expect this message, please contact your clinic administrator.
+            """;
+
+        return await SendEmailAsync(user.Email, subject, body, null, cancellationToken);
     }
 
     public async Task<bool> SendEmailAsync(
@@ -68,22 +90,12 @@ public class DummyEmailService : IEmailService
     {
         var sentAt = DateTime.UtcNow;
 
-        // 1. Structured console/log output
-        _logger.LogInformation("""
-            [EMAIL SERVICE] Dummy email dispatched successfully:
-            To: {ToEmail}
-            Patient ID: {PatientId}
-            Subject: {Subject}
-            Body Preview: {BodyPreview}
-            SentAt: {SentAt}
-            """,
+        _logger.LogInformation(
+            "[EMAIL SERVICE] Notification logged for {ToEmail} (PatientId={PatientId}, Subject={Subject})",
             toEmail,
             patientId,
-            subject,
-            body.Length > 200 ? body[..200] + "..." : body,
-            sentAt);
+            subject);
 
-        // 2. Track in-memory for testing / query API
         var logEntry = new SentEmailLog
         {
             PatientId = patientId,
@@ -94,7 +106,6 @@ public class DummyEmailService : IEmailService
         };
         _inMemoryEmailHistory.Add(logEntry);
 
-        // 3. Persist to SQL Server database for audit trail
         try
         {
             using var scope = _scopeFactory.CreateScope();

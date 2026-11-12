@@ -12,6 +12,9 @@ public class PatientSummaryDto
     public string Gender { get; set; } = string.Empty;
     public DateTime? DateOfBirth { get; set; }
     public string? ProfilePictureUrl { get; set; }
+    public int? PrimaryDoctorId { get; set; }
+    public string? PrimaryDoctorName { get; set; }
+    public string RowVersion { get; set; } = string.Empty;
     public int ConsultationCount { get; set; }
     public DateTime CreatedAtUtc { get; set; }
 }

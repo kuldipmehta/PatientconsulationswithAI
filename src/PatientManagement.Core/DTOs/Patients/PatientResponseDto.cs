@@ -16,6 +16,9 @@ public class PatientResponseDto
     public string? Address { get; set; }
     public string? MedicalNotes { get; set; }
     public string? ProfilePictureUrl { get; set; }
+    public int? PrimaryDoctorId { get; set; }
+    public string? PrimaryDoctorName { get; set; }
+    public string RowVersion { get; set; } = string.Empty;
     public DateTime CreatedAtUtc { get; set; }
     public DateTime? UpdatedAtUtc { get; set; }
     public int ConsultationCount => Consultations.Count;

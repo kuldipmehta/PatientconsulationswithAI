@@ -37,8 +37,10 @@ public class CreatePatientDto
     [StringLength(1000, ErrorMessage = "Medical notes cannot exceed 1000 characters")]
     public string? MedicalNotes { get; set; }
 
+    public int? PrimaryDoctorId { get; set; }
+
     /// <summary>
-    /// Profile picture file to be uploaded to Azure Blob Storage
+    /// Profile picture file to be uploaded to private Azure Blob Storage
     /// </summary>
     public IFormFile? Picture { get; set; }
 }

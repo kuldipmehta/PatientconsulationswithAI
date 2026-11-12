@@ -12,39 +12,28 @@ public class ConsultationConfiguration : IEntityTypeConfiguration<Consultation>
 
         builder.HasKey(c => c.Id);
 
-        builder.Property(c => c.DoctorName)
-            .IsRequired()
-            .HasMaxLength(100);
+        builder.Property(c => c.DoctorName).IsRequired().HasMaxLength(100);
+        builder.Property(c => c.Diagnosis).IsRequired().HasMaxLength(250);
+        builder.Property(c => c.Symptoms).HasMaxLength(500);
+        builder.Property(c => c.Notes).HasMaxLength(2000);
+        builder.Property(c => c.TreatmentPlan).HasMaxLength(1000);
+        builder.Property(c => c.Prescription).HasMaxLength(1000);
+        builder.Property(c => c.Status).IsRequired();
+        builder.Property(c => c.Fee).HasPrecision(10, 2);
+        builder.Property(c => c.ConsultationDate).IsRequired();
+        builder.Property(c => c.DurationMinutes).HasDefaultValue(30);
+        builder.Property(c => c.CreatedAtUtc).IsRequired();
+        builder.Property(c => c.RowVersion).IsRowVersion();
 
-        builder.Property(c => c.Diagnosis)
-            .IsRequired()
-            .HasMaxLength(250);
-
-        builder.Property(c => c.Symptoms)
-            .HasMaxLength(500);
-
-        builder.Property(c => c.Notes)
-            .HasMaxLength(2000);
-
-        builder.Property(c => c.TreatmentPlan)
-            .HasMaxLength(1000);
-
-        builder.Property(c => c.Prescription)
-            .HasMaxLength(1000);
-
-        builder.Property(c => c.Status)
-            .IsRequired();
-
-        builder.Property(c => c.Fee)
-            .HasPrecision(10, 2);
-
-        builder.Property(c => c.ConsultationDate)
-            .IsRequired();
-
-        builder.Property(c => c.CreatedAtUtc)
-            .IsRequired();
-
+        builder.HasQueryFilter(c => !c.IsDeleted);
         builder.HasIndex(c => c.PatientId);
+        builder.HasIndex(c => c.DoctorId);
         builder.HasIndex(c => c.ConsultationDate);
+        builder.HasIndex(c => c.IsDeleted);
+
+        builder.HasOne(c => c.Doctor)
+            .WithMany(d => d.Consultations)
+            .HasForeignKey(c => c.DoctorId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }

@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace PatientManagement.Core.Entities;
 
 public class Patient
@@ -14,8 +16,19 @@ public class Patient
     public string? MedicalNotes { get; set; }
     public string? ProfilePictureUrl { get; set; }
     public string? ProfilePictureBlobName { get; set; }
+
+    public int? PrimaryDoctorId { get; set; }
+    public Doctor? PrimaryDoctor { get; set; }
+
+    public bool IsDeleted { get; set; }
+    public DateTime? DeletedAtUtc { get; set; }
+    public int? DeletedByUserId { get; set; }
+
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAtUtc { get; set; }
+
+    [Timestamp]
+    public byte[] RowVersion { get; set; } = Array.Empty<byte>();
 
     public ICollection<Consultation> Consultations { get; set; } = new List<Consultation>();
 }

@@ -1,6 +1,7 @@
 namespace PatientManagement.Core.Interfaces;
 
 public record BlobUploadResult(string BlobName, string BlobUrl, string ContentType, long Size);
+public record BlobReadResult(Stream Content, string ContentType);
 
 public interface IBlobStorageService
 {
@@ -16,5 +17,7 @@ public interface IBlobStorageService
         string? containerName = null,
         CancellationToken cancellationToken = default);
 
-    string GetBlobUrl(string blobName, string? containerName = null);
+    string GetReadSasUrl(string blobName, TimeSpan? ttl = null, string? containerName = null);
+
+    Task<BlobReadResult?> OpenReadAsync(string blobName, string? containerName = null, CancellationToken cancellationToken = default);
 }

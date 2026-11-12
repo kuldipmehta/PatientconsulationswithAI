@@ -10,4 +10,5 @@ public interface IPatientService
     Task<PatientResponseDto> CreatePatientAsync(CreatePatientDto dto, CancellationToken cancellationToken = default);
     Task<PatientResponseDto?> UpdatePatientAsync(int id, UpdatePatientDto dto, CancellationToken cancellationToken = default);
     Task<bool> DeletePatientAsync(int id, CancellationToken cancellationToken = default);
+    Task<BlobReadResult?> GetPatientPictureAsync(int id, CancellationToken cancellationToken = default);
 }

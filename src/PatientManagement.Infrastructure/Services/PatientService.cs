@@ -4,6 +4,8 @@ using PatientManagement.Core.DTOs.Common;
 using PatientManagement.Core.DTOs.Consultations;
 using PatientManagement.Core.DTOs.Patients;
 using PatientManagement.Core.Entities;
+using PatientManagement.Core.Enums;
+using PatientManagement.Core.Exceptions;
 using PatientManagement.Core.Interfaces;
 using PatientManagement.Infrastructure.Data;
 
@@ -15,17 +17,20 @@ public class PatientService : IPatientService
     private readonly IBlobStorageService _blobStorageService;
     private readonly IEmailService _emailService;
     private readonly ILogger<PatientService> _logger;
+    private readonly ICurrentUserService? _currentUser;
 
     public PatientService(
         ApplicationDbContext dbContext,
         IBlobStorageService blobStorageService,
         IEmailService emailService,
-        ILogger<PatientService> logger)
+        ILogger<PatientService> logger,
+        ICurrentUserService? currentUser = null)
     {
         _dbContext = dbContext;
         _blobStorageService = blobStorageService;
         _emailService = emailService;
         _logger = logger;
+        _currentUser = currentUser;
     }
 
     public async Task<PagedResult<PatientSummaryDto>> GetPatientsAsync(
@@ -34,9 +39,15 @@ public class PatientService : IPatientService
     {
         var query = _dbContext.Patients
             .AsNoTracking()
+            .Include(p => p.PrimaryDoctor)
             .AsQueryable();
 
-        // 1. Filtering
+        // Restrict doctors to their own assigned patients
+        if (_currentUser is { IsAuthenticated: true, Role: UserRole.Doctor })
+        {
+            query = query.Where(p => p.PrimaryDoctorId == _currentUser.DoctorId);
+        }
+
         if (!string.IsNullOrWhiteSpace(filter.SearchTerm))
         {
             var search = filter.SearchTerm.Trim().ToLower();
@@ -63,7 +74,6 @@ public class PatientService : IPatientService
 
         var totalCount = await query.CountAsync(cancellationToken);
 
-        // 2. Sorting
         query = (filter.SortBy?.ToLower(), filter.SortDescending) switch
         {
             ("firstname", false) => query.OrderBy(p => p.FirstName),
@@ -78,25 +88,46 @@ public class PatientService : IPatientService
             _ => query.OrderByDescending(p => p.CreatedAtUtc)
         };
 
-        // 3. Paging & Projection
-        var items = await query
+        var rawItems = await query
             .Skip((filter.PageNumber - 1) * filter.PageSize)
             .Take(filter.PageSize)
-            .Select(p => new PatientSummaryDto
+            .Select(p => new
             {
-                Id = p.Id,
-                FirstName = p.FirstName,
-                LastName = p.LastName,
-                Email = p.Email,
-                PhoneNumber = p.PhoneNumber,
-                Age = p.Age,
-                Gender = p.Gender,
-                DateOfBirth = p.DateOfBirth,
-                ProfilePictureUrl = p.ProfilePictureUrl,
+                p.Id,
+                p.FirstName,
+                p.LastName,
+                p.Email,
+                p.PhoneNumber,
+                p.Age,
+                p.Gender,
+                p.DateOfBirth,
+                p.ProfilePictureUrl,
+                p.ProfilePictureBlobName,
+                p.PrimaryDoctorId,
+                PrimaryDoctorName = p.PrimaryDoctor != null ? p.PrimaryDoctor.FullName : null,
+                p.RowVersion,
                 ConsultationCount = p.Consultations.Count,
-                CreatedAtUtc = p.CreatedAtUtc
+                p.CreatedAtUtc
             })
             .ToListAsync(cancellationToken);
+
+        var items = rawItems.Select(p => new PatientSummaryDto
+        {
+            Id = p.Id,
+            FirstName = p.FirstName,
+            LastName = p.LastName,
+            Email = p.Email,
+            PhoneNumber = p.PhoneNumber,
+            Age = p.Age,
+            Gender = p.Gender,
+            DateOfBirth = p.DateOfBirth,
+            ProfilePictureUrl = ResolveSecurePictureUrl(p.Id, p.ProfilePictureBlobName, p.ProfilePictureUrl),
+            PrimaryDoctorId = p.PrimaryDoctorId,
+            PrimaryDoctorName = p.PrimaryDoctorName,
+            RowVersion = p.RowVersion.Length > 0 ? Convert.ToBase64String(p.RowVersion) : string.Empty,
+            ConsultationCount = p.ConsultationCount,
+            CreatedAtUtc = p.CreatedAtUtc
+        }).ToList();
 
         return new PagedResult<PatientSummaryDto>(items, totalCount, filter.PageNumber, filter.PageSize);
     }
@@ -105,6 +136,7 @@ public class PatientService : IPatientService
     {
         var patient = await _dbContext.Patients
             .AsNoTracking()
+            .Include(p => p.PrimaryDoctor)
             .Include(p => p.Consultations)
             .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
 
@@ -113,18 +145,17 @@ public class PatientService : IPatientService
             return null;
         }
 
+        EnsureDoctorOwnership(patient);
         return MapToResponseDto(patient);
     }
 
     public async Task<PatientResponseDto> CreatePatientAsync(CreatePatientDto dto, CancellationToken cancellationToken = default)
     {
+        string? pictureBlobName = null;
         string? pictureUrl = null;
-        string? blobName = null;
 
-        // 1. Upload picture to Azure Blob Storage if provided
         if (dto.Picture != null && dto.Picture.Length > 0)
         {
-            _logger.LogInformation("Uploading picture for new patient {FirstName} {LastName}...", dto.FirstName, dto.LastName);
             using var stream = dto.Picture.OpenReadStream();
             var uploadResult = await _blobStorageService.UploadAsync(
                 stream,
@@ -132,11 +163,16 @@ public class PatientService : IPatientService
                 dto.Picture.ContentType,
                 cancellationToken: cancellationToken);
 
+            pictureBlobName = uploadResult.BlobName;
             pictureUrl = uploadResult.BlobUrl;
-            blobName = uploadResult.BlobName;
         }
 
-        // 2. Build Patient Entity
+        int? assignedDoctorId = dto.PrimaryDoctorId;
+        if (_currentUser is { IsAuthenticated: true, Role: UserRole.Doctor })
+        {
+            assignedDoctorId = _currentUser.DoctorId;
+        }
+
         var patient = new Patient
         {
             FirstName = dto.FirstName.Trim(),
@@ -149,25 +185,29 @@ public class PatientService : IPatientService
             Address = dto.Address?.Trim(),
             MedicalNotes = dto.MedicalNotes?.Trim(),
             ProfilePictureUrl = pictureUrl,
-            ProfilePictureBlobName = blobName,
+            ProfilePictureBlobName = pictureBlobName,
+            PrimaryDoctorId = assignedDoctorId,
             CreatedAtUtc = DateTime.UtcNow
         };
 
-        // 3. Save to SQL Server via EF Core
         _dbContext.Patients.Add(patient);
         await _dbContext.SaveChangesAsync(cancellationToken);
-        _logger.LogInformation("Created new patient in SQL Server database with ID {PatientId}.", patient.Id);
 
-        // 4. Send dummy email after patient is created
+        if (assignedDoctorId.HasValue)
+        {
+            await _dbContext.Entry(patient).Reference(p => p.PrimaryDoctor).LoadAsync(cancellationToken);
+        }
+
         try
         {
-            await _emailService.SendPatientWelcomeEmailAsync(patient, cancellationToken);
-            _logger.LogInformation("Dispatched dummy welcome email to patient #{PatientId} ({Email}).", patient.Id, patient.Email);
+            // Never email passwords/credentials — send a one-time onboarding link notification
+            var setupTokenHint = Guid.NewGuid().ToString("N")[..12];
+            var setupLink = $"https://portal.patientmanagement.local/set-password?invite={setupTokenHint}";
+            await _emailService.SendPatientWelcomeEmailAsync(patient, setupLink, cancellationToken);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to send welcome email for patient ID {PatientId}.", patient.Id);
-            // Non-blocking for patient creation
+            _logger.LogError(ex, "Failed to dispatch welcome notification for patient ID {PatientId}.", patient.Id);
         }
 
         return MapToResponseDto(patient);
@@ -179,6 +219,7 @@ public class PatientService : IPatientService
         CancellationToken cancellationToken = default)
     {
         var patient = await _dbContext.Patients
+            .Include(p => p.PrimaryDoctor)
             .Include(p => p.Consultations)
             .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
 
@@ -187,10 +228,24 @@ public class PatientService : IPatientService
             return null;
         }
 
-        // Handle replacement picture upload if provided
+        EnsureDoctorOwnership(patient);
+
+        // Apply optimistic concurrency check if RowVersion token was provided
+        if (!string.IsNullOrWhiteSpace(dto.RowVersion))
+        {
+            try
+            {
+                var clientVersion = Convert.FromBase64String(dto.RowVersion);
+                _dbContext.Entry(patient).Property(p => p.RowVersion).OriginalValue = clientVersion;
+            }
+            catch (FormatException)
+            {
+                throw new ArgumentException("Invalid RowVersion concurrency token.");
+            }
+        }
+
         if (dto.Picture != null && dto.Picture.Length > 0)
         {
-            // Optionally delete old blob
             if (!string.IsNullOrEmpty(patient.ProfilePictureBlobName))
             {
                 await _blobStorageService.DeleteAsync(patient.ProfilePictureBlobName, cancellationToken: cancellationToken);
@@ -216,35 +271,100 @@ public class PatientService : IPatientService
         patient.DateOfBirth = dto.DateOfBirth;
         patient.Address = dto.Address?.Trim();
         patient.MedicalNotes = dto.MedicalNotes?.Trim();
+
+        if (dto.PrimaryDoctorId.HasValue && _currentUser?.Role != UserRole.Doctor)
+        {
+            patient.PrimaryDoctorId = dto.PrimaryDoctorId;
+        }
+
         patient.UpdatedAtUtc = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync(cancellationToken);
-        _logger.LogInformation("Updated patient record with ID {PatientId}.", patient.Id);
+
+        if (patient.PrimaryDoctorId.HasValue)
+        {
+            await _dbContext.Entry(patient).Reference(p => p.PrimaryDoctor).LoadAsync(cancellationToken);
+        }
 
         return MapToResponseDto(patient);
     }
 
     public async Task<bool> DeletePatientAsync(int id, CancellationToken cancellationToken = default)
     {
-        var patient = await _dbContext.Patients.FindAsync(new object[] { id }, cancellationToken);
+        var patient = await _dbContext.Patients
+            .Include(p => p.Consultations)
+            .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
+
         if (patient == null)
         {
             return false;
         }
 
-        // Clean up picture blob if exists
-        if (!string.IsNullOrEmpty(patient.ProfilePictureBlobName))
+        EnsureDoctorOwnership(patient);
+
+        // Soft delete preserves medical records and audit trail
+        var now = DateTime.UtcNow;
+        patient.IsDeleted = true;
+        patient.DeletedAtUtc = now;
+        patient.DeletedByUserId = _currentUser?.UserId;
+
+        foreach (var consultation in patient.Consultations)
         {
-            await _blobStorageService.DeleteAsync(patient.ProfilePictureBlobName, cancellationToken: cancellationToken);
+            consultation.IsDeleted = true;
+            consultation.DeletedAtUtc = now;
+            consultation.DeletedByUserId = _currentUser?.UserId;
         }
 
-        _dbContext.Patients.Remove(patient);
         await _dbContext.SaveChangesAsync(cancellationToken);
-        _logger.LogInformation("Deleted patient record with ID {PatientId}.", id);
+        _logger.LogInformation("Soft-deleted patient #{PatientId} and {Count} consultations by user {UserId}.",
+            id, patient.Consultations.Count, _currentUser?.UserId);
         return true;
     }
 
-    private static PatientResponseDto MapToResponseDto(Patient patient)
+    public async Task<BlobReadResult?> GetPatientPictureAsync(int id, CancellationToken cancellationToken = default)
+    {
+        var patient = await _dbContext.Patients
+            .AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
+
+        if (patient == null)
+        {
+            return null;
+        }
+
+        EnsureDoctorOwnership(patient);
+
+        if (string.IsNullOrWhiteSpace(patient.ProfilePictureBlobName))
+        {
+            return null;
+        }
+
+        return await _blobStorageService.OpenReadAsync(patient.ProfilePictureBlobName, cancellationToken: cancellationToken);
+    }
+
+    private void EnsureDoctorOwnership(Patient patient)
+    {
+        if (_currentUser is { IsAuthenticated: true, Role: UserRole.Doctor } &&
+            patient.PrimaryDoctorId != _currentUser.DoctorId)
+        {
+            throw new ForbiddenAccessException($"Doctor is not assigned to patient #{patient.Id}.");
+        }
+    }
+
+    private string? ResolveSecurePictureUrl(int patientId, string? blobName, string? fallbackUrl)
+    {
+        if (!string.IsNullOrWhiteSpace(blobName))
+        {
+            var sas = _blobStorageService.GetReadSasUrl(blobName, TimeSpan.FromMinutes(15));
+            return string.IsNullOrWhiteSpace(sas)
+                ? $"/api/patients/{patientId}/picture"
+                : sas;
+        }
+
+        return fallbackUrl;
+    }
+
+    private PatientResponseDto MapToResponseDto(Patient patient)
     {
         return new PatientResponseDto
         {
@@ -258,7 +378,10 @@ public class PatientService : IPatientService
             DateOfBirth = patient.DateOfBirth,
             Address = patient.Address,
             MedicalNotes = patient.MedicalNotes,
-            ProfilePictureUrl = patient.ProfilePictureUrl,
+            ProfilePictureUrl = ResolveSecurePictureUrl(patient.Id, patient.ProfilePictureBlobName, patient.ProfilePictureUrl),
+            PrimaryDoctorId = patient.PrimaryDoctorId,
+            PrimaryDoctorName = patient.PrimaryDoctor?.FullName,
+            RowVersion = patient.RowVersion.Length > 0 ? Convert.ToBase64String(patient.RowVersion) : string.Empty,
             CreatedAtUtc = patient.CreatedAtUtc,
             UpdatedAtUtc = patient.UpdatedAtUtc,
             Consultations = patient.Consultations.Select(c => new ConsultationResponseDto
@@ -266,8 +389,10 @@ public class PatientService : IPatientService
                 Id = c.Id,
                 PatientId = c.PatientId,
                 PatientName = $"{patient.FirstName} {patient.LastName}".Trim(),
+                DoctorId = c.DoctorId,
                 DoctorName = c.DoctorName,
                 ConsultationDate = c.ConsultationDate,
+                DurationMinutes = c.DurationMinutes,
                 Diagnosis = c.Diagnosis,
                 Symptoms = c.Symptoms,
                 Notes = c.Notes,
@@ -275,6 +400,7 @@ public class PatientService : IPatientService
                 Prescription = c.Prescription,
                 Status = c.Status,
                 Fee = c.Fee,
+                RowVersion = c.RowVersion.Length > 0 ? Convert.ToBase64String(c.RowVersion) : string.Empty,
                 CreatedAtUtc = c.CreatedAtUtc,
                 UpdatedAtUtc = c.UpdatedAtUtc
             }).OrderByDescending(c => c.ConsultationDate).ToList()
