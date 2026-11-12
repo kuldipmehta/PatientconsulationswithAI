@@ -182,7 +182,21 @@ export class ApiService {
       })
         .then(async response => {
           if (!response.ok || !response.body) {
-            throw new Error(`Streaming failed with status ${response.status}`);
+            let errorMessage = `Streaming failed with status ${response.status}`;
+            try {
+              const text = await response.text();
+              if (text) {
+                const parsed = JSON.parse(text) as { message?: string; errors?: string[] };
+                if (parsed?.errors?.length) {
+                  errorMessage = `${parsed.message || errorMessage}: ${parsed.errors.join(', ')}`;
+                } else if (parsed?.message) {
+                  errorMessage = parsed.message;
+                }
+              }
+            } catch {
+              // Fall back to status-based error message if response body is not JSON.
+            }
+            throw new Error(errorMessage);
           }
 
           const reader = response.body.getReader();

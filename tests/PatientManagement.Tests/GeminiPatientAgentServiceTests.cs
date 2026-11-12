@@ -328,9 +328,15 @@ public class GeminiPatientAgentServiceTests : IDisposable
             .ReturnsAsync(patient);
 
         int callCount = 0;
-        var handler = new StubHttpMessageHandler((_, _) =>
+        string? secondTurnPayload = null;
+        var handler = new StubHttpMessageHandler(async (req, ct) =>
         {
             callCount++;
+            if (callCount == 2 && req.Content != null)
+            {
+                secondTurnPayload = await req.Content.ReadAsStringAsync(ct);
+            }
+
             var json = callCount == 1
                 ? JsonSerializer.Serialize(new
                 {
@@ -346,6 +352,7 @@ public class GeminiPatientAgentServiceTests : IDisposable
                                     {
                                         functionCall = new
                                         {
+                                            id = "call_123",
                                             name = "propose_consultation",
                                             args = new
                                             {
@@ -375,10 +382,10 @@ public class GeminiPatientAgentServiceTests : IDisposable
                     }
                 });
 
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(json, Encoding.UTF8, "application/json")
-            });
+            };
         });
 
         var liveConfig = new ConfigurationBuilder()
@@ -403,6 +410,10 @@ public class GeminiPatientAgentServiceTests : IDisposable
 
         // Assert
         callCount.Should().Be(2);
+        secondTurnPayload.Should().NotBeNull();
+        secondTurnPayload.Should().Contain("\"role\":\"user\"");
+        secondTurnPayload.Should().NotContain("\"role\":\"function\"");
+        secondTurnPayload.Should().Contain("\"id\":\"call_123\"");
         response.ToolsExecuted.Should().Contain("propose_consultation");
         response.PendingActions.Should().HaveCount(1);
         response.Reply.Should().Contain("Dr. Sarah Jenkins");
@@ -514,6 +525,62 @@ public class GeminiPatientAgentServiceTests : IDisposable
         summary.ModelUsed.Should().Be("fallback-simulated");
         summary.AiGeneratedSummary.Should().Contain("Fallback Mode");
         summary.SimulatedModeNotice.Should().Contain("SIMULATED MODE ACTIVE");
+    }
+
+    [Fact]
+    public async Task ChatAsync_WhenPrimaryModelTimesOut_AutomaticallyFallsBackToNextModel()
+    {
+        // Arrange
+        var seenModels = new List<string>();
+        var handler = new StubHttpMessageHandler((req, _) =>
+        {
+            var url = req.RequestUri!.ToString();
+            seenModels.Add(url);
+
+            if (url.Contains("gemini-flash-latest"))
+            {
+                throw new TaskCanceledException("Simulated upstream timeout");
+            }
+
+            var okJson = JsonSerializer.Serialize(new
+            {
+                candidates = new[]
+                {
+                    new { content = new { parts = new[] { new { text = "Recovered after upstream timeout." } } } }
+                }
+            });
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(okJson, Encoding.UTF8, "application/json")
+            });
+        });
+
+        var liveConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "Gemini:ApiKey", "test-mock-key-offline" },
+                { "Gemini:Model", "gemini-flash-latest" }
+            })
+            .Build();
+
+        var liveAgent = new GeminiPatientAgentService(
+            new HttpClient(handler),
+            _dbContext,
+            liveConfig,
+            _patientServiceMock.Object,
+            _consultationServiceMock.Object,
+            _doctorServiceMock.Object,
+            _loggerMock.Object);
+
+        // Act
+        var response = await liveAgent.ChatAsync(new AiChatRequestDto { Message = "Hello assistant" });
+
+        // Assert
+        response.IsSimulatedMode.Should().BeFalse();
+        response.ModelUsed.Should().Be("gemini-flash-lite-latest");
+        response.Reply.Should().Be("Recovered after upstream timeout.");
+        seenModels.Should().Contain(u => u.Contains("gemini-flash-latest"));
+        seenModels.Should().Contain(u => u.Contains("gemini-flash-lite-latest"));
     }
 
     public void Dispose()

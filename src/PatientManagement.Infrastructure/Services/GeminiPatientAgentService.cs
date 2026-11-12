@@ -608,17 +608,23 @@ public class GeminiPatientAgentService : IAiPatientAgentService
                 toolsExecuted.Add(name);
                 var resultObj = await ExecuteSafeToolAsync(name, args, proposals, cancellationToken);
 
+                var fnResponse = new JsonObject
+                {
+                    ["name"] = name,
+                    ["response"] = JsonSerializer.SerializeToNode(new { result = resultObj }, JsonOptions)
+                };
+                if (fc.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String)
+                {
+                    fnResponse["id"] = idEl.GetString();
+                }
+
                 toolResponses.Add(new JsonObject
                 {
-                    ["functionResponse"] = new JsonObject
-                    {
-                        ["name"] = name,
-                        ["response"] = JsonSerializer.SerializeToNode(new { result = resultObj }, JsonOptions)
-                    }
+                    ["functionResponse"] = fnResponse
                 });
             }
 
-            contents.Add(new JsonObject { ["role"] = "function", ["parts"] = toolResponses });
+            contents.Add(new JsonObject { ["role"] = "user", ["parts"] = toolResponses });
         }
 
         return ("Tool execution completed. Please review the proposed actions or clinical findings above.", effectiveModel);
@@ -790,8 +796,8 @@ public class GeminiPatientAgentService : IAiPatientAgentService
     private static readonly string[] FallbackCandidateModels =
     [
         "gemini-flash-lite-latest",
-        "gemini-2.5-flash-lite",
-        "gemini-3.8-flash",
+        "gemini-3-flash-preview",
+        "gemini-3.5-flash-lite",
         "gemini-flash-latest"
     ];
 
@@ -842,17 +848,48 @@ public class GeminiPatientAgentService : IAiPatientAgentService
                 }
 
                 _logger.LogError("Gemini API error ({Status}): {Body}", response.StatusCode, body);
-                throw new InvalidOperationException($"Google Gemini API returned {code} ({response.StatusCode}).");
+                var upstreamDetail = ExtractGoogleErrorMessage(body);
+                throw new InvalidOperationException(
+                    string.IsNullOrWhiteSpace(upstreamDetail)
+                        ? $"Google Gemini API returned {code} ({response.StatusCode})."
+                        : $"Google Gemini API returned {code} ({response.StatusCode}): {upstreamDetail}");
             }
-            catch (HttpRequestException ex)
+            catch (Exception ex) when (
+                ex is HttpRequestException ||
+                (!cancellationToken.IsCancellationRequested && ex is OperationCanceledException) ||
+                ex.GetType().Name is "TimeoutRejectedException" or "BrokenCircuitException")
             {
                 lastErrorStatus = ex.Message;
-                _logger.LogWarning(ex, "Transient HTTP error calling Gemini model {Model}; trying next fallback.", candidateModel);
+                _logger.LogWarning(ex, "Transient HTTP/timeout error calling Gemini model {Model}; trying next fallback.", candidateModel);
             }
         }
 
         throw new GeminiUpstreamUnavailableException(
             $"All Gemini candidate models returned transient errors (last status: {lastErrorStatus ?? "503 ServiceUnavailable"}).");
+    }
+
+    private static string? ExtractGoogleErrorMessage(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("error", out var err) &&
+                err.TryGetProperty("message", out var msg))
+            {
+                return msg.GetString();
+            }
+        }
+        catch (JsonException)
+        {
+            // Ignore unparseable error payloads.
+        }
+
+        return null;
     }
 
     private sealed class GeminiUpstreamUnavailableException(string message) : Exception(message);

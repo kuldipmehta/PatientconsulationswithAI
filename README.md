@@ -44,7 +44,7 @@ flowchart LR
 │   ├── PatientManagement.Infrastructure/  # EF Core 10, Migrations, Auth, AI Safety, Blob & Email Services
 │   └── PatientManagement.Api/             # .NET 10 Controllers, JWT/CORS/RateLimit Middleware, Health Checks
 ├── tests/
-│   └── PatientManagement.Tests/           # 54 xUnit Tests (Unit, Integration, RBAC, Concurrency, Mocked AI & 28-Case Eval Suite)
+│   └── PatientManagement.Tests/           # 55 xUnit Tests (Unit, Integration, RBAC, Concurrency, Mocked AI & 28-Case Eval Suite)
 ├── frontend/                              # Angular 19 Standalone SPA (Lazy-Loaded Features + Karma Specs)
 ├── .github/workflows/azure-deploy.yml     # CI/CD: .NET Test+Coverage, EF Script, Angular Lint/Test/Build
 ├── COMPLIANCE.md                          # DPDP Act, HIPAA & AI Data Governance Guide
@@ -95,7 +95,7 @@ npm start
 
 ## Testing & Verification
 
-### Backend (.NET 10 — 54 Automated Tests)
+### Backend (.NET 10 — 55 Automated Tests)
 Includes unit tests, InMemory API integration tests (`WebApplicationFactory<Program>`), RBAC scoping checks (`401`/`403`), concurrency & double-booking (`409`), upload magic-byte rejection (`400`), mocked HTTP Gemini tool-calling tests, and a **28-case offline AI evaluation dataset** (`tests/PatientManagement.Tests/Evaluation/ai-evaluation-dataset.json`):
 
 ```bash

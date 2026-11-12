@@ -43,15 +43,15 @@ public static class DependencyInjection
         // Google Gemini AI Client with Polly-backed Standard Resilience (Retries, Timeouts, Circuit Breaker)
         services.AddHttpClient<IAiPatientAgentService, GeminiPatientAgentService>(client =>
         {
-            client.Timeout = TimeSpan.FromSeconds(60);
+            client.Timeout = TimeSpan.FromSeconds(95);
         })
         .AddStandardResilienceHandler(options =>
         {
             options.Retry.MaxRetryAttempts = 1;
             options.Retry.UseJitter = true;
-            options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(15);
-            options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(45);
-            options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(45);
+            options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(30);
+            options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(90);
+            options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(60);
         });
 
         return services;
