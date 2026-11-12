@@ -1,6 +1,8 @@
 using System.Net;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using PatientManagement.Core.DTOs.Common;
+using PatientManagement.Core.Exceptions;
 
 namespace PatientManagement.Api.Middleware;
 
@@ -23,17 +25,34 @@ public class ExceptionHandlingMiddleware
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "An unhandled exception occurred during request execution: {Message}", ex.Message);
+            _logger.LogError(ex, "Request failed with exception: {Message}", ex.Message);
             await HandleExceptionAsync(context, ex);
         }
     }
 
     private static async Task HandleExceptionAsync(HttpContext context, Exception exception)
     {
+        if (context.Response.HasStarted) return;
+
         context.Response.ContentType = "application/json";
 
         var (statusCode, message, errors) = exception switch
         {
+            ForbiddenAccessException forbidden => (
+                HttpStatusCode.Forbidden,
+                forbidden.Message,
+                new List<string> { forbidden.Message }),
+
+            BookingConflictException conflict => (
+                HttpStatusCode.Conflict,
+                conflict.Message,
+                new List<string> { conflict.Message }),
+
+            DbUpdateConcurrencyException => (
+                HttpStatusCode.Conflict,
+                "Concurrency conflict: This record was modified by another user. Please refresh and try again.",
+                new List<string> { "Stale RowVersion token detected." }),
+
             KeyNotFoundException notFound => (
                 HttpStatusCode.NotFound,
                 notFound.Message,

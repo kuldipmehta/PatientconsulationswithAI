@@ -8,11 +8,16 @@ public class CreateConsultationDto
     [Required(ErrorMessage = "PatientId is required")]
     public int PatientId { get; set; }
 
+    public int? DoctorId { get; set; }
+
     [Required(ErrorMessage = "Doctor name is required")]
     [StringLength(100, ErrorMessage = "Doctor name cannot exceed 100 characters")]
     public string DoctorName { get; set; } = string.Empty;
 
     public DateTime ConsultationDate { get; set; } = DateTime.UtcNow;
+
+    [Range(10, 240, ErrorMessage = "Duration must be between 10 and 240 minutes")]
+    public int DurationMinutes { get; set; } = 30;
 
     [Required(ErrorMessage = "Diagnosis is required")]
     [StringLength(250, ErrorMessage = "Diagnosis cannot exceed 250 characters")]

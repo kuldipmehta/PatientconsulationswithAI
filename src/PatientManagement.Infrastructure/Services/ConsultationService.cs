@@ -2,6 +2,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using PatientManagement.Core.DTOs.Consultations;
 using PatientManagement.Core.Entities;
+using PatientManagement.Core.Enums;
+using PatientManagement.Core.Exceptions;
 using PatientManagement.Core.Interfaces;
 using PatientManagement.Infrastructure.Data;
 
@@ -11,11 +13,16 @@ public class ConsultationService : IConsultationService
 {
     private readonly ApplicationDbContext _dbContext;
     private readonly ILogger<ConsultationService> _logger;
+    private readonly ICurrentUserService? _currentUser;
 
-    public ConsultationService(ApplicationDbContext dbContext, ILogger<ConsultationService> logger)
+    public ConsultationService(
+        ApplicationDbContext dbContext,
+        ILogger<ConsultationService> logger,
+        ICurrentUserService? currentUser = null)
     {
         _dbContext = dbContext;
         _logger = logger;
+        _currentUser = currentUser;
     }
 
     public async Task<IEnumerable<ConsultationResponseDto>> GetConsultationsAsync(
@@ -26,6 +33,11 @@ public class ConsultationService : IConsultationService
             .AsNoTracking()
             .Include(c => c.Patient)
             .AsQueryable();
+
+        if (_currentUser is { IsAuthenticated: true, Role: UserRole.Doctor })
+        {
+            query = query.Where(c => c.Patient.PrimaryDoctorId == _currentUser.DoctorId || c.DoctorId == _currentUser.DoctorId);
+        }
 
         if (patientId.HasValue)
         {
@@ -51,6 +63,7 @@ public class ConsultationService : IConsultationService
             return null;
         }
 
+        EnsureDoctorAccess(consultation.Patient, consultation.DoctorId);
         return MapToResponseDto(consultation);
     }
 
@@ -66,11 +79,26 @@ public class ConsultationService : IConsultationService
             throw new KeyNotFoundException($"Patient with ID {dto.PatientId} was not found.");
         }
 
+        EnsureDoctorAccess(patient, dto.DoctorId);
+
+        var resolvedDoctor = await ResolveDoctorAsync(dto.DoctorId, dto.DoctorName, cancellationToken);
+        var doctorId = resolvedDoctor?.Id ?? dto.DoctorId;
+        var doctorName = resolvedDoctor?.FullName ?? dto.DoctorName.Trim();
+        var startUtc = dto.ConsultationDate == default ? DateTime.UtcNow : dto.ConsultationDate;
+        var duration = dto.DurationMinutes > 0 ? dto.DurationMinutes : 30;
+
+        if (dto.Status != ConsultationStatus.Cancelled)
+        {
+            await EnsureNoDoctorConflictAsync(doctorId, doctorName, startUtc, duration, excludeConsultationId: null, cancellationToken);
+        }
+
         var consultation = new Consultation
         {
             PatientId = dto.PatientId,
-            DoctorName = dto.DoctorName.Trim(),
-            ConsultationDate = dto.ConsultationDate == default ? DateTime.UtcNow : dto.ConsultationDate,
+            DoctorId = doctorId,
+            DoctorName = doctorName,
+            ConsultationDate = startUtc,
+            DurationMinutes = duration,
             Diagnosis = dto.Diagnosis.Trim(),
             Symptoms = dto.Symptoms?.Trim(),
             Notes = dto.Notes?.Trim(),
@@ -83,7 +111,6 @@ public class ConsultationService : IConsultationService
 
         _dbContext.Consultations.Add(consultation);
         await _dbContext.SaveChangesAsync(cancellationToken);
-        _logger.LogInformation("Created new consultation #{ConsultationId} for patient #{PatientId}.", consultation.Id, dto.PatientId);
 
         consultation.Patient = patient;
         return MapToResponseDto(consultation);
@@ -103,8 +130,35 @@ public class ConsultationService : IConsultationService
             return null;
         }
 
-        consultation.DoctorName = dto.DoctorName.Trim();
+        EnsureDoctorAccess(consultation.Patient, consultation.DoctorId);
+
+        if (!string.IsNullOrWhiteSpace(dto.RowVersion))
+        {
+            try
+            {
+                var clientVersion = Convert.FromBase64String(dto.RowVersion);
+                _dbContext.Entry(consultation).Property(c => c.RowVersion).OriginalValue = clientVersion;
+            }
+            catch (FormatException)
+            {
+                throw new ArgumentException("Invalid RowVersion concurrency token.");
+            }
+        }
+
+        var resolvedDoctor = await ResolveDoctorAsync(dto.DoctorId ?? consultation.DoctorId, dto.DoctorName, cancellationToken);
+        var doctorId = resolvedDoctor?.Id ?? dto.DoctorId ?? consultation.DoctorId;
+        var doctorName = resolvedDoctor?.FullName ?? dto.DoctorName.Trim();
+        var duration = dto.DurationMinutes > 0 ? dto.DurationMinutes : 30;
+
+        if (dto.Status != ConsultationStatus.Cancelled)
+        {
+            await EnsureNoDoctorConflictAsync(doctorId, doctorName, dto.ConsultationDate, duration, excludeConsultationId: id, cancellationToken);
+        }
+
+        consultation.DoctorId = doctorId;
+        consultation.DoctorName = doctorName;
         consultation.ConsultationDate = dto.ConsultationDate;
+        consultation.DurationMinutes = duration;
         consultation.Diagnosis = dto.Diagnosis.Trim();
         consultation.Symptoms = dto.Symptoms?.Trim();
         consultation.Notes = dto.Notes?.Trim();
@@ -115,24 +169,88 @@ public class ConsultationService : IConsultationService
         consultation.UpdatedAtUtc = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync(cancellationToken);
-        _logger.LogInformation("Updated consultation #{ConsultationId}.", id);
-
         return MapToResponseDto(consultation);
     }
 
     public async Task<bool> DeleteConsultationAsync(int id, CancellationToken cancellationToken = default)
     {
-        var consultation = await _dbContext.Consultations.FindAsync(new object[] { id }, cancellationToken);
+        var consultation = await _dbContext.Consultations
+            .Include(c => c.Patient)
+            .FirstOrDefaultAsync(c => c.Id == id, cancellationToken);
+
         if (consultation == null)
         {
             return false;
         }
 
-        _dbContext.Consultations.Remove(consultation);
+        EnsureDoctorAccess(consultation.Patient, consultation.DoctorId);
+
+        consultation.IsDeleted = true;
+        consultation.DeletedAtUtc = DateTime.UtcNow;
+        consultation.DeletedByUserId = _currentUser?.UserId;
+
         await _dbContext.SaveChangesAsync(cancellationToken);
-        _logger.LogInformation("Deleted consultation #{ConsultationId}.", id);
+        _logger.LogInformation("Soft-deleted consultation #{ConsultationId}.", id);
 
         return true;
+    }
+
+    private void EnsureDoctorAccess(Patient patient, int? consultationDoctorId)
+    {
+        if (_currentUser is { IsAuthenticated: true, Role: UserRole.Doctor } &&
+            patient.PrimaryDoctorId != _currentUser.DoctorId &&
+            consultationDoctorId != _currentUser.DoctorId)
+        {
+            throw new ForbiddenAccessException("Doctor does not have access to this patient's consultation.");
+        }
+    }
+
+    private async Task<Doctor?> ResolveDoctorAsync(int? doctorId, string doctorName, CancellationToken cancellationToken)
+    {
+        if (doctorId.HasValue)
+        {
+            return await _dbContext.Doctors.FirstOrDefaultAsync(d => d.Id == doctorId.Value, cancellationToken);
+        }
+
+        var cleanName = doctorName.Trim().ToLower();
+        return await _dbContext.Doctors
+            .FirstOrDefaultAsync(d => d.FullName.ToLower() == cleanName, cancellationToken);
+    }
+
+    private async Task EnsureNoDoctorConflictAsync(
+        int? doctorId,
+        string doctorName,
+        DateTime startUtc,
+        int durationMinutes,
+        int? excludeConsultationId,
+        CancellationToken cancellationToken)
+    {
+        var endUtc = startUtc.AddMinutes(durationMinutes);
+
+        var candidates = await _dbContext.Consultations
+            .AsNoTracking()
+            .Where(c =>
+                c.Status != ConsultationStatus.Cancelled &&
+                (!excludeConsultationId.HasValue || c.Id != excludeConsultationId.Value) &&
+                ((doctorId.HasValue && c.DoctorId == doctorId.Value) ||
+                 (!doctorId.HasValue && c.DoctorName.ToLower() == doctorName.ToLower())))
+            .Select(c => new
+            {
+                c.Id,
+                c.ConsultationDate,
+                Duration = c.DurationMinutes > 0 ? c.DurationMinutes : 30
+            })
+            .ToListAsync(cancellationToken);
+
+        var conflict = candidates.FirstOrDefault(c =>
+            startUtc < c.ConsultationDate.AddMinutes(c.Duration) &&
+            endUtc > c.ConsultationDate);
+
+        if (conflict != null)
+        {
+            throw new BookingConflictException(
+                $"Scheduling conflict: {doctorName} already has an active consultation (#{conflict.Id}) from {conflict.ConsultationDate:yyyy-MM-dd HH:mm} UTC to {conflict.ConsultationDate.AddMinutes(conflict.Duration):HH:mm} UTC.");
+        }
     }
 
     private static ConsultationResponseDto MapToResponseDto(Consultation c)
@@ -142,8 +260,10 @@ public class ConsultationService : IConsultationService
             Id = c.Id,
             PatientId = c.PatientId,
             PatientName = c.Patient != null ? $"{c.Patient.FirstName} {c.Patient.LastName}".Trim() : string.Empty,
+            DoctorId = c.DoctorId,
             DoctorName = c.DoctorName,
             ConsultationDate = c.ConsultationDate,
+            DurationMinutes = c.DurationMinutes,
             Diagnosis = c.Diagnosis,
             Symptoms = c.Symptoms,
             Notes = c.Notes,
@@ -151,6 +271,7 @@ public class ConsultationService : IConsultationService
             Prescription = c.Prescription,
             Status = c.Status,
             Fee = c.Fee,
+            RowVersion = c.RowVersion.Length > 0 ? Convert.ToBase64String(c.RowVersion) : string.Empty,
             CreatedAtUtc = c.CreatedAtUtc,
             UpdatedAtUtc = c.UpdatedAtUtc
         };

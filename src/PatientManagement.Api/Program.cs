@@ -1,15 +1,49 @@
 using System.Reflection;
+using System.Text;
 using System.Text.Json.Serialization;
+using System.Threading.RateLimiting;
+using FluentValidation;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
+using PatientManagement.Api.Filters;
 using PatientManagement.Api.Middleware;
+using PatientManagement.Api.Services;
+using PatientManagement.Core.Interfaces;
 using PatientManagement.Infrastructure;
 using PatientManagement.Infrastructure.Data;
+using PatientManagement.Infrastructure.Validation;
+using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// 1. Add Controllers with JSON configuration
-builder.Services.AddControllers()
+// 1. Structured Logging (Serilog + optional Application Insights)
+builder.Host.UseSerilog((context, services, loggerConfig) =>
+{
+    loggerConfig
+        .ReadFrom.Configuration(context.Configuration)
+        .Enrich.FromLogContext()
+        .WriteTo.Console();
+
+    var appInsightsConn = context.Configuration["ApplicationInsights:ConnectionString"];
+    if (!string.IsNullOrWhiteSpace(appInsightsConn))
+    {
+        loggerConfig.WriteTo.ApplicationInsights(appInsightsConn, TelemetryConverter.Traces);
+    }
+});
+
+// 2. Controllers, JSON & FluentValidation Filter
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<ICurrentUserService, CurrentUserService>();
+builder.Services.AddValidatorsFromAssemblyContaining<CreatePatientDtoValidator>();
+
+builder.Services.AddControllers(options =>
+    {
+        options.Filters.Add<FluentValidationActionFilter>();
+    })
     .AddJsonOptions(options =>
     {
         options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
@@ -17,48 +51,119 @@ builder.Services.AddControllers()
         options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
     });
 
-// 2. Add CORS
+// 3. Strict CORS Policy (Origin Allowlist)
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+    ?? ["http://localhost:4200", "https://localhost:4200"];
+
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowAll", policy =>
+    options.AddPolicy("RestrictedCors", policy =>
     {
-        policy.AllowAnyOrigin()
+        policy.WithOrigins(allowedOrigins)
               .AllowAnyMethod()
               .AllowAnyHeader()
-              .WithExposedHeaders("*");
+              .WithExposedHeaders("Content-Disposition");
     });
 });
 
-// 3. Add Infrastructure Services (EF Core SQL Server, Azure Blob Storage, Dummy Email Service)
-builder.Services.AddInfrastructure(builder.Configuration);
+// 4. Rate Limiting (Global + Auth + AI Policies)
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 
-// 4. Configure Swagger / OpenAPI
+    options.AddFixedWindowLimiter("auth", opt =>
+    {
+        opt.Window = TimeSpan.FromMinutes(1);
+        opt.PermitLimit = 20;
+        opt.QueueLimit = 0;
+    });
+
+    options.AddFixedWindowLimiter("ai", opt =>
+    {
+        opt.Window = TimeSpan.FromMinutes(1);
+        opt.PermitLimit = 30;
+        opt.QueueLimit = 2;
+    });
+
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.User.Identity?.Name ?? httpContext.Connection.RemoteIpAddress?.ToString() ?? "anonymous",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                AutoReplenishment = true,
+                PermitLimit = 120,
+                Window = TimeSpan.FromMinutes(1)
+            }));
+});
+
+// 5. JWT Bearer Authentication (Built-in JWT + optional Azure AD / Entra ID)
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer();
+
+builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
+    .Configure<IConfiguration>((options, config) =>
+    {
+        var entraAuthority = config["AzureAd:Authority"];
+        var jwtAudience = config["Jwt:Audience"] ?? "PatientManagement.Client";
+        if (!string.IsNullOrWhiteSpace(entraAuthority))
+        {
+            options.Authority = entraAuthority;
+            options.Audience = config["AzureAd:ClientId"] ?? jwtAudience;
+        }
+        else
+        {
+            var jwtKey = config["Jwt:SigningKey"]
+                ?? Environment.GetEnvironmentVariable("JWT_SIGNING_KEY")
+                ?? "DEV_ONLY_REPLACE_IN_PRODUCTION_WITH_32+_CHAR_KEY_1234567890";
+            var jwtIssuer = config["Jwt:Issuer"] ?? "PatientManagement.Api";
+
+            options.TokenValidationParameters = new TokenValidationParameters
+            {
+                ValidateIssuer = true,
+                ValidateAudience = true,
+                ValidateLifetime = true,
+                ValidateIssuerSigningKey = true,
+                ValidIssuer = jwtIssuer,
+                ValidAudience = jwtAudience,
+                IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
+                ClockSkew = TimeSpan.FromMinutes(1)
+            };
+        }
+    });
+
+builder.Services.AddAuthorization();
+
+// 6. Infrastructure & Health Checks
+builder.Services.AddInfrastructure(builder.Configuration);
+builder.Services.AddHealthChecks()
+    .AddDbContextCheck<ApplicationDbContext>("sqlserver");
+
+// 7. Swagger / OpenAPI with Bearer Auth
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new OpenApiInfo
     {
-        Title = "Patient Management API",
+        Title = "Patient Consultations & AI Clinical Support API",
         Version = "v1",
-        Description = """
-            ### Patient Management API (.NET 10 + EF Core + SQL Server + Azure Blob Storage)
-
-            #### Features:
-            - **Create Patient**: Multipart form endpoint storing profile pictures in Azure Blob Storage.
-            - **Dummy Email**: Automated welcome email dispatch and audit logging upon patient registration.
-            - **Patient List & Search**: Retrieve, filter, sort, and paginate patient records from SQL Server.
-            - **Data Handling**: Fetch and update patient details and consultation records via EF Core.
-            - **Google Gemini AI Agent**: Autonomous clinical AI assistant with function calling (database queries, appointment booking, clinical summaries & symptom triage).
-            - **Azure App Service Ready**: Pre-configured for deployment with public Swagger documentation.
-            """,
-        Contact = new OpenApiContact
-        {
-            Name = "Healthcare Engineering Team",
-            Email = "support@patientmanagement.com"
-        }
+        Description = "Production-hardened .NET 10 Web API with JWT RBAC, Private Blob SAS storage, Soft Delete + Audit Trail, Double-Booking Prevention, and Safe Gemini Clinical AI."
     });
 
-    // Include XML comments documentation if available
+    c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Name = "Authorization",
+        Type = SecuritySchemeType.Http,
+        Scheme = "bearer",
+        BearerFormat = "JWT",
+        In = ParameterLocation.Header,
+        Description = "Enter JWT Bearer token obtained from /api/auth/login"
+    });
+
+    c.AddSecurityRequirement(document => new OpenApiSecurityRequirement
+    {
+        [new OpenApiSecuritySchemeReference("Bearer", document)] = []
+    });
+
     var xmlFilename = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
     var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFilename);
     if (File.Exists(xmlPath))
@@ -69,58 +174,67 @@ builder.Services.AddSwaggerGen(c =>
 
 var app = builder.Build();
 
-// 5. Global Exception Handling Middleware
+app.UseSerilogRequestLogging();
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 
-// 6. Enable Swagger in all environments (including Azure App Service Production)
-app.UseSwagger();
-app.UseSwaggerUI(c =>
+if (app.Environment.IsDevelopment() || builder.Configuration.GetValue<bool>("Swagger:Enabled"))
 {
-    c.SwaggerEndpoint("/swagger/v1/swagger.json", "Patient Management API v1");
-    // Serve Swagger at both root (/) and /swagger
-    c.RoutePrefix = string.Empty;
-    c.DocumentTitle = "Patient Management API - Swagger UI";
-    c.DisplayRequestDuration();
-});
+    app.UseSwagger();
+    app.UseSwaggerUI(c =>
+    {
+        c.SwaggerEndpoint("/swagger/v1/swagger.json", "Patient Management API v1");
+        c.RoutePrefix = string.Empty;
+        c.DocumentTitle = "Patient Management API - Swagger UI";
+        c.DisplayRequestDuration();
+    });
+    app.MapGet("/swagger", () => Results.Redirect("/")).AllowAnonymous();
+}
 
-// Also keep /swagger accessible
-app.MapGet("/swagger", () => Results.Redirect("/"));
+app.UseCors("RestrictedCors");
 
-// CORS must execute before any redirects or authorization to ensure headers are always present
-app.UseCors("AllowAll");
-
-// Only redirect HTTP to HTTPS in Production (prevents preflight CORS failures & SSL certificate errors in local development)
 if (!app.Environment.IsDevelopment())
 {
     app.UseHttpsRedirection();
 }
 
+app.UseRateLimiter();
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
 
-// Health check endpoint
-app.MapGet("/health", () => Results.Ok(new
+// Health Check Endpoints
+app.MapHealthChecks("/health", new HealthCheckOptions
 {
-    Status = "Healthy",
-    Timestamp = DateTime.UtcNow,
-    Environment = app.Environment.EnvironmentName,
-    Framework = ".NET 10"
-}));
+    ResponseWriter = async (context, report) =>
+    {
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsJsonAsync(new
+        {
+            Status = report.Status.ToString(),
+            Timestamp = DateTime.UtcNow,
+            Environment = app.Environment.EnvironmentName,
+            Framework = ".NET 10",
+            Checks = report.Entries.ToDictionary(e => e.Key, e => e.Value.Status.ToString())
+        });
+    }
+}).AllowAnonymous();
 
-// 7. Auto-migrate SQL Server database and seed initial test data
-using (var scope = app.Services.CreateScope())
+app.MapHealthChecks("/health/ready").AllowAnonymous();
+
+// Apply migrations & seed ONLY in Development (or when explicitly enabled) — Production runs migrations separately
+var autoMigrate = app.Environment.IsDevelopment() || builder.Configuration.GetValue<bool>("Database:AutoMigrateOnStartup");
+if (autoMigrate && !string.Equals(app.Environment.EnvironmentName, "Testing", StringComparison.OrdinalIgnoreCase))
 {
+    using var scope = app.Services.CreateScope();
     var services = scope.ServiceProvider;
     var logger = services.GetRequiredService<ILogger<Program>>();
     var dbContext = services.GetRequiredService<ApplicationDbContext>();
 
     try
     {
-        logger.LogInformation("Applying SQL Server database migrations...");
+        logger.LogInformation("Applying SQL Server database migrations (Development/AutoMigrate)...");
         await dbContext.Database.MigrateAsync();
-        logger.LogInformation("Database migrations applied successfully.");
-
         await DbInitializer.SeedAsync(dbContext, logger);
     }
     catch (Exception ex)
@@ -131,5 +245,4 @@ using (var scope = app.Services.CreateScope())
 
 app.Run();
 
-// For integration tests visibility
 public partial class Program { }

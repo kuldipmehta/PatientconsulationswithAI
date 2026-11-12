@@ -5,11 +5,16 @@ namespace PatientManagement.Core.DTOs.Consultations;
 
 public class UpdateConsultationDto
 {
+    public int? DoctorId { get; set; }
+
     [Required(ErrorMessage = "Doctor name is required")]
     [StringLength(100, ErrorMessage = "Doctor name cannot exceed 100 characters")]
     public string DoctorName { get; set; } = string.Empty;
 
     public DateTime ConsultationDate { get; set; }
+
+    [Range(10, 240, ErrorMessage = "Duration must be between 10 and 240 minutes")]
+    public int DurationMinutes { get; set; } = 30;
 
     [Required(ErrorMessage = "Diagnosis is required")]
     [StringLength(250, ErrorMessage = "Diagnosis cannot exceed 250 characters")]
@@ -31,4 +36,9 @@ public class UpdateConsultationDto
 
     [Range(0, 100000, ErrorMessage = "Fee must be a non-negative value")]
     public decimal? Fee { get; set; }
+
+    /// <summary>
+    /// Base64 RowVersion token for optimistic concurrency control
+    /// </summary>
+    public string? RowVersion { get; set; }
 }

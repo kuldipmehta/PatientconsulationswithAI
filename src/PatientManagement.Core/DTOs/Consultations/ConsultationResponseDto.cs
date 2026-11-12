@@ -7,8 +7,10 @@ public class ConsultationResponseDto
     public int Id { get; set; }
     public int PatientId { get; set; }
     public string PatientName { get; set; } = string.Empty;
+    public int? DoctorId { get; set; }
     public string DoctorName { get; set; } = string.Empty;
     public DateTime ConsultationDate { get; set; }
+    public int DurationMinutes { get; set; }
     public string Diagnosis { get; set; } = string.Empty;
     public string? Symptoms { get; set; }
     public string? Notes { get; set; }
@@ -17,6 +19,7 @@ public class ConsultationResponseDto
     public ConsultationStatus Status { get; set; }
     public string StatusName => Status.ToString();
     public decimal? Fee { get; set; }
+    public string RowVersion { get; set; } = string.Empty;
     public DateTime CreatedAtUtc { get; set; }
     public DateTime? UpdatedAtUtc { get; set; }
 }
