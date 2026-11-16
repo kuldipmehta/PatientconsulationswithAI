@@ -18,10 +18,13 @@ import {
   LivePatientSummary,
   PagedResult,
   PatientDetail,
+  PatientDocumentDto,
   PatientFilterParams,
   PatientSummary,
   PendingActionProposal,
-  UpdateConsultationDto
+  RagSearchResultDto,
+  UpdateConsultationDto,
+  UploadPatientDocumentDto
 } from '../models/patient.models';
 
 export interface SseChatEvent {
@@ -261,6 +264,41 @@ export class ApiService {
       },
       { params }
     );
+  }
+
+  // ==================== PATIENT DOCUMENTS & RAG ====================
+  getPatientDocuments(patientId: number): Observable<ApiResponse<PatientDocumentDto[]>> {
+    return this.http.get<ApiResponse<PatientDocumentDto[]>>(`${this.baseUrl}/patients/${patientId}/documents`);
+  }
+
+  uploadPatientDocument(patientId: number, file: File, dto: UploadPatientDocumentDto): Observable<ApiResponse<PatientDocumentDto>> {
+    const formData = new FormData();
+    formData.append('file', file, file.name);
+    formData.append('documentType', dto.documentType || 'General');
+    if (dto.consultationId) {
+      formData.append('consultationId', dto.consultationId.toString());
+    }
+    if (dto.summary) {
+      formData.append('summary', dto.summary);
+    }
+
+    return this.http.post<ApiResponse<PatientDocumentDto>>(`${this.baseUrl}/patients/${patientId}/documents`, formData);
+  }
+
+  deletePatientDocument(patientId: number, documentId: number): Observable<ApiResponse<boolean>> {
+    return this.http.delete<ApiResponse<boolean>>(`${this.baseUrl}/patients/${patientId}/documents/${documentId}`);
+  }
+
+  searchPatientRag(patientId: number, query: string, topK = 5, minScore = 0.35): Observable<ApiResponse<RagSearchResultDto[]>> {
+    return this.http.post<ApiResponse<RagSearchResultDto[]>>(`${this.baseUrl}/patients/${patientId}/rag/search`, {
+      query,
+      topK,
+      minScore
+    });
+  }
+
+  reindexPatientConsultations(patientId: number): Observable<ApiResponse<{ patientId: number; consultationsIndexed: number }>> {
+    return this.http.post<ApiResponse<{ patientId: number; consultationsIndexed: number }>>(`${this.baseUrl}/patients/${patientId}/rag/reindex`, {});
   }
 
   private parseSseBlock(block: string): SseChatEvent | null {

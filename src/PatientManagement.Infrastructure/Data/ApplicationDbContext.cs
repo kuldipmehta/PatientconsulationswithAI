@@ -29,6 +29,8 @@ public class ApplicationDbContext : DbContext
     public DbSet<PendingAiAction> PendingAiActions => Set<PendingAiAction>();
     public DbSet<AiChatSession> AiChatSessions => Set<AiChatSession>();
     public DbSet<AiChatSessionMessage> AiChatSessionMessages => Set<AiChatSessionMessage>();
+    public DbSet<PatientDocument> PatientDocuments => Set<PatientDocument>();
+    public DbSet<PatientDocumentChunk> PatientDocumentChunks => Set<PatientDocumentChunk>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

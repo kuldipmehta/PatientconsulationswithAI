@@ -31,4 +31,6 @@ public class Patient
     public byte[] RowVersion { get; set; } = Array.Empty<byte>();
 
     public ICollection<Consultation> Consultations { get; set; } = new List<Consultation>();
+    public ICollection<PatientDocument> Documents { get; set; } = new List<PatientDocument>();
+    public ICollection<PatientDocumentChunk> DocumentChunks { get; set; } = new List<PatientDocumentChunk>();
 }

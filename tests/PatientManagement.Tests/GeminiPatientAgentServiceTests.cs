@@ -11,6 +11,7 @@ using PatientManagement.Core.DTOs.Common;
 using PatientManagement.Core.DTOs.Consultations;
 using PatientManagement.Core.DTOs.Doctors;
 using PatientManagement.Core.DTOs.Patients;
+using PatientManagement.Core.DTOs.Rag;
 using PatientManagement.Core.Enums;
 using PatientManagement.Core.Interfaces;
 using PatientManagement.Infrastructure.Data;
@@ -581,6 +582,108 @@ public class GeminiPatientAgentServiceTests : IDisposable
         response.Reply.Should().Be("Recovered after upstream timeout.");
         seenModels.Should().Contain(u => u.Contains("gemini-flash-latest"));
         seenModels.Should().Contain(u => u.Contains("gemini-flash-lite-latest"));
+    }
+
+    [Fact]
+    public async Task ChatAsync_WhenGeminiCallsSemanticSearchTool_ExecutesRagToolAndGroundsResponse()
+    {
+        // Arrange
+        var patient = new PatientResponseDto { Id = 9, FirstName = "Diana", LastName = "Prince", Age = 28, Gender = "Female" };
+        _patientServiceMock.Setup(s => s.GetPatientByIdAsync(9, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(patient);
+
+        var ragServiceMock = new Mock<IPatientRagService>();
+        ragServiceMock.Setup(r => r.SearchPatientKnowledgeAsync(9, "asthma treatment", It.IsAny<int>(), It.IsAny<double>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<RagSearchResultDto>
+            {
+                new()
+                {
+                    ChunkId = 1,
+                    PatientId = 9,
+                    SourceType = "PatientDocument",
+                    SourceLabel = "pulmonology_eval.pdf (Section 1)",
+                    TextContent = "Patient prescribed salbutamol inhaler 100mcg and budesonide daily.",
+                    SimilarityScore = 0.89,
+                    CreatedAtUtc = DateTime.UtcNow
+                }
+            });
+
+        int callCount = 0;
+        var handler = new StubHttpMessageHandler((_, _) =>
+        {
+            callCount++;
+            var json = callCount == 1
+                ? JsonSerializer.Serialize(new
+                {
+                    candidates = new[]
+                    {
+                        new
+                        {
+                            content = new
+                            {
+                                parts = new[]
+                                {
+                                    new
+                                    {
+                                        functionCall = new
+                                        {
+                                            id = "call_rag_1",
+                                            name = "semantic_search_patient_history",
+                                            args = new { patientId = 9, query = "asthma treatment", topK = 3 }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                })
+                : JsonSerializer.Serialize(new
+                {
+                    candidates = new[]
+                    {
+                        new
+                        {
+                            content = new
+                            {
+                                parts = new[] { new { text = "According to patient records, they are prescribed salbutamol 100mcg and budesonide." } }
+                            }
+                        }
+                    }
+                });
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            });
+        });
+
+        var liveConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "Gemini:ApiKey", "test-mock-key-offline" },
+                { "Gemini:Model", "gemini-flash-latest" }
+            })
+            .Build();
+
+        var liveAgent = new GeminiPatientAgentService(
+            new HttpClient(handler),
+            _dbContext,
+            liveConfig,
+            _patientServiceMock.Object,
+            _consultationServiceMock.Object,
+            _doctorServiceMock.Object,
+            _loggerMock.Object,
+            currentUser: null,
+            ragService: ragServiceMock.Object);
+
+        // Act
+        var response = await liveAgent.ChatAsync(new AiChatRequestDto { Message = "What is the asthma treatment on file?", PatientContextId = 9 });
+
+        // Assert
+        callCount.Should().Be(2);
+        response.ToolsExecuted.Should().Contain("semantic_search_patient_history");
+        response.Reply.Should().Contain("salbutamol");
+        ragServiceMock.Verify(r => r.SearchPatientKnowledgeAsync(9, "asthma treatment", It.IsAny<int>(), It.IsAny<double>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     public void Dispose()

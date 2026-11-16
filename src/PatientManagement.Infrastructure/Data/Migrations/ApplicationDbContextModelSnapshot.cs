@@ -540,6 +540,135 @@ namespace PatientManagement.Infrastructure.Data.Migrations
                     b.ToTable("Patients", (string)null);
                 });
 
+            modelBuilder.Entity("PatientManagement.Core.Entities.PatientDocument", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("BlobName")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<int?>("ConsultationId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("DeletedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("DeletedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("DocumentType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(260)
+                        .HasColumnType("nvarchar(260)");
+
+                    b.Property<long>("FileSizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("PatientId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<string>("Summary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<int>("TotalChunks")
+                        .HasColumnType("int");
+
+                    b.Property<int>("UploadedByUserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConsultationId");
+
+                    b.HasIndex("IsDeleted");
+
+                    b.HasIndex("PatientId");
+
+                    b.ToTable("PatientDocuments", (string)null);
+                });
+
+            modelBuilder.Entity("PatientManagement.Core.Entities.PatientDocumentChunk", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("ChunkIndex")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("ConsultationId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("EmbeddingDimensions")
+                        .HasColumnType("int");
+
+                    b.Property<string>("EmbeddingVectorJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int?>("PatientDocumentId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("PatientId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SourceLabel")
+                        .IsRequired()
+                        .HasMaxLength(250)
+                        .HasColumnType("nvarchar(250)");
+
+                    b.Property<string>("SourceType")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<string>("TextContent")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConsultationId");
+
+                    b.HasIndex("PatientDocumentId");
+
+                    b.HasIndex("PatientId", "SourceType");
+
+                    b.ToTable("PatientDocumentChunks", (string)null);
+                });
+
             modelBuilder.Entity("PatientManagement.Core.Entities.PendingAiAction", b =>
                 {
                     b.Property<string>("ActionId")
@@ -650,6 +779,49 @@ namespace PatientManagement.Infrastructure.Data.Migrations
                     b.Navigation("PrimaryDoctor");
                 });
 
+            modelBuilder.Entity("PatientManagement.Core.Entities.PatientDocument", b =>
+                {
+                    b.HasOne("PatientManagement.Core.Entities.Consultation", "Consultation")
+                        .WithMany()
+                        .HasForeignKey("ConsultationId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("PatientManagement.Core.Entities.Patient", "Patient")
+                        .WithMany("Documents")
+                        .HasForeignKey("PatientId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Consultation");
+
+                    b.Navigation("Patient");
+                });
+
+            modelBuilder.Entity("PatientManagement.Core.Entities.PatientDocumentChunk", b =>
+                {
+                    b.HasOne("PatientManagement.Core.Entities.Consultation", "Consultation")
+                        .WithMany()
+                        .HasForeignKey("ConsultationId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("PatientManagement.Core.Entities.PatientDocument", "PatientDocument")
+                        .WithMany("Chunks")
+                        .HasForeignKey("PatientDocumentId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.HasOne("PatientManagement.Core.Entities.Patient", "Patient")
+                        .WithMany("DocumentChunks")
+                        .HasForeignKey("PatientId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Consultation");
+
+                    b.Navigation("Patient");
+
+                    b.Navigation("PatientDocument");
+                });
+
             modelBuilder.Entity("PatientManagement.Core.Entities.AiChatSession", b =>
                 {
                     b.Navigation("Messages");
@@ -670,6 +842,15 @@ namespace PatientManagement.Infrastructure.Data.Migrations
             modelBuilder.Entity("PatientManagement.Core.Entities.Patient", b =>
                 {
                     b.Navigation("Consultations");
+
+                    b.Navigation("DocumentChunks");
+
+                    b.Navigation("Documents");
+                });
+
+            modelBuilder.Entity("PatientManagement.Core.Entities.PatientDocument", b =>
+                {
+                    b.Navigation("Chunks");
                 });
 #pragma warning restore 612, 618
         }

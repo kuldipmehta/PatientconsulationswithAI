@@ -28,6 +28,7 @@ flowchart LR
 - **Prompt Injection Defense & PII Minimization (`PatientAiSanitizer`):** User-written notes/symptoms are delimited inside `<untrusted_clinical_text>` tags; names, emails, phone numbers, and addresses are stripped before calling Gemini; tools execute inside C# authorization checks.
 - **Human-in-the-Loop Confirmation:** Scheduling via `propose_consultation` creates a `PendingAiActions` proposal (`Book Dr. Sarah Jenkins...`) requiring an explicit click to `POST /api/ai/actions/{actionId}/confirm`.
 - **Structured Output, Citations, Streaming & Simulated Banner:** Enforces Gemini `responseSchema`, returns consultation `#ID` citations, streams responses over SSE (`/api/ai/chat/stream`) with server-side `AiChatSessions`, logs all runs to `AiInteractionLogs`, and displays an explicit **SIMULATED MODE ACTIVE** banner when running without a live server key.
+- **Retrieval-Augmented Generation (RAG):** Clinical PDF/TXT document ingestion via `PdfPig`, text chunking (500-char window, 100-char overlap), vector embeddings with Gemini `text-embedding-004` (plus offline deterministic test fallback), SQL Server vector store (`PatientDocumentChunks`), patient-scoped cosine similarity search (`semantic_search_patient_history`), and automatic chat grounding with document & visit source citations.
 
 ### 3. Resilience & Scheduling Reliability
 - **Polly Standard Resilience:** `AddStandardResilienceHandler` wraps outbound Gemini calls with exponential backoff retries, timeouts, and circuit breaking.
@@ -44,7 +45,7 @@ flowchart LR
 │   ├── PatientManagement.Infrastructure/  # EF Core 10, Migrations, Auth, AI Safety, Blob & Email Services
 │   └── PatientManagement.Api/             # .NET 10 Controllers, JWT/CORS/RateLimit Middleware, Health Checks
 ├── tests/
-│   └── PatientManagement.Tests/           # 55 xUnit Tests (Unit, Integration, RBAC, Concurrency, Mocked AI & 28-Case Eval Suite)
+│   └── PatientManagement.Tests/           # 62 xUnit Tests (Unit, Integration, RBAC, Concurrency, Mocked AI, RAG Vector Search & 28-Case Eval Suite)
 ├── frontend/                              # Angular 19 Standalone SPA (Lazy-Loaded Features + Karma Specs)
 ├── .github/workflows/azure-deploy.yml     # CI/CD: .NET Test+Coverage, EF Script, Angular Lint/Test/Build
 ├── COMPLIANCE.md                          # DPDP Act, HIPAA & AI Data Governance Guide
@@ -95,7 +96,7 @@ npm start
 
 ## Testing & Verification
 
-### Backend (.NET 10 — 55 Automated Tests)
+### Backend (.NET 10 — 62 Automated Tests)
 Includes unit tests, InMemory API integration tests (`WebApplicationFactory<Program>`), RBAC scoping checks (`401`/`403`), concurrency & double-booking (`409`), upload magic-byte rejection (`400`), mocked HTTP Gemini tool-calling tests, and a **28-case offline AI evaluation dataset** (`tests/PatientManagement.Tests/Evaluation/ai-evaluation-dataset.json`):
 
 ```bash

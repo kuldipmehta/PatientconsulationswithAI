@@ -30,6 +30,11 @@ public class AiSourceCitationDto
     public DateTime ConsultationDate { get; set; }
     public string DoctorName { get; set; } = string.Empty;
     public string ClinicalSnippet { get; set; } = string.Empty;
+    public string SourceType { get; set; } = "Consultation"; // "Consultation", "PatientDocument"
+    public int? DocumentId { get; set; }
+    public string? DocumentName { get; set; }
+    public int? ChunkIndex { get; set; }
+    public double? SimilarityScore { get; set; }
 }
 
 public class AiChatResponseDto

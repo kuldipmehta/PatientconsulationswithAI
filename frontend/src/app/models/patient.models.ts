@@ -225,6 +225,43 @@ export interface AiSourceCitation {
   consultationDate: string;
   doctorName: string;
   clinicalSnippet: string;
+  sourceType?: string;
+  documentId?: number | null;
+  documentName?: string | null;
+  chunkIndex?: number | null;
+  similarityScore?: number | null;
+}
+
+export interface PatientDocumentDto {
+  id: number;
+  patientId: number;
+  consultationId?: number | null;
+  fileName: string;
+  contentType: string;
+  fileSizeBytes: number;
+  documentType: string;
+  status: string;
+  totalChunks: number;
+  summary?: string | null;
+  createdAtUtc: string;
+}
+
+export interface UploadPatientDocumentDto {
+  documentType: string;
+  consultationId?: number | null;
+  summary?: string | null;
+}
+
+export interface RagSearchResultDto {
+  chunkId: number;
+  patientId: number;
+  documentId?: number | null;
+  consultationId?: number | null;
+  sourceType: string;
+  sourceLabel: string;
+  textContent: string;
+  similarityScore: number;
+  createdAtUtc: string;
 }
 
 export interface AiStatusInfo {

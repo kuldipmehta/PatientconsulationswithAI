@@ -6,6 +6,8 @@ using Microsoft.Extensions.Http.Resilience;
 using PatientManagement.Core.Interfaces;
 using PatientManagement.Infrastructure.Data;
 using PatientManagement.Infrastructure.Services;
+using PatientManagement.Infrastructure.Services.Ai;
+using PatientManagement.Infrastructure.Services.Rag;
 using PatientManagement.Infrastructure.Validation;
 
 namespace PatientManagement.Infrastructure;
@@ -39,6 +41,12 @@ public static class DependencyInjection
         services.AddScoped<IAuditService, AuditService>();
         services.AddScoped<IPatientService, PatientService>();
         services.AddScoped<IConsultationService, ConsultationService>();
+        services.AddScoped<IPatientRagService, PatientRagService>();
+
+        services.AddHttpClient<ITextEmbeddingService, GeminiTextEmbeddingService>(client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(60);
+        });
 
         // Google Gemini AI Client with Polly-backed Standard Resilience (Retries, Timeouts, Circuit Breaker)
         services.AddHttpClient<IAiPatientAgentService, GeminiPatientAgentService>(client =>

@@ -29,6 +29,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
     private readonly IDoctorService _doctorService;
     private readonly ILogger<GeminiPatientAgentService> _logger;
     private readonly ICurrentUserService? _currentUser;
+    private readonly IPatientRagService? _ragService;
     private readonly string? _configuredApiKey;
     private readonly string _defaultModel;
     private readonly string _baseUrl;
@@ -47,7 +48,8 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         IConsultationService consultationService,
         IDoctorService doctorService,
         ILogger<GeminiPatientAgentService> logger,
-        ICurrentUserService? currentUser = null)
+        ICurrentUserService? currentUser = null,
+        IPatientRagService? ragService = null)
     {
         _httpClient = httpClient;
         _dbContext = dbContext;
@@ -56,6 +58,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         _doctorService = doctorService;
         _logger = logger;
         _currentUser = currentUser;
+        _ragService = ragService;
 
         var rawKey = configuration["Gemini:ApiKey"] ?? Environment.GetEnvironmentVariable("GEMINI_API_KEY");
         _configuredApiKey = string.IsNullOrWhiteSpace(rawKey) || rawKey.Contains("YOUR_GEMINI_API_KEY", StringComparison.OrdinalIgnoreCase)
@@ -360,6 +363,38 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             {
                 citations = PatientAiSanitizer.ExtractCitations(ctxPatient);
             }
+
+            if (_ragService != null)
+            {
+                try
+                {
+                    var ragMatches = await _ragService.SearchPatientKnowledgeAsync(
+                        request.PatientContextId.Value,
+                        request.Message,
+                        topK: 3,
+                        minScore: 0.35,
+                        cancellationToken);
+
+                    foreach (var m in ragMatches)
+                    {
+                        citations.Add(new AiSourceCitationDto
+                        {
+                            ConsultationId = m.ConsultationId ?? 0,
+                            ConsultationDate = m.CreatedAtUtc,
+                            DoctorName = m.SourceType == "Consultation" ? m.SourceLabel : "Clinical Document",
+                            ClinicalSnippet = m.TextContent.Length > 160 ? m.TextContent[..160] + "..." : m.TextContent,
+                            SourceType = m.SourceType,
+                            DocumentId = m.DocumentId,
+                            DocumentName = m.SourceLabel,
+                            SimilarityScore = m.SimilarityScore
+                        });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "RAG semantic retrieval failed during ChatAsync.");
+                }
+            }
         }
 
         string reply;
@@ -554,12 +589,43 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             ? $"Active patient context ID: {request.PatientContextId.Value}. "
             : string.Empty;
 
+        string ragContextBlock = string.Empty;
+        if (_ragService != null && request.PatientContextId.HasValue)
+        {
+            try
+            {
+                var ragSnippets = await _ragService.SearchPatientKnowledgeAsync(
+                    request.PatientContextId.Value,
+                    request.Message,
+                    topK: 3,
+                    minScore: 0.35,
+                    cancellationToken);
+
+                if (ragSnippets.Count > 0)
+                {
+                    var sb = new StringBuilder();
+                    sb.AppendLine("\n<retrieved_patient_knowledge>");
+                    foreach (var s in ragSnippets)
+                    {
+                        sb.AppendLine($"[{s.SourceLabel} | Match {s.SimilarityScore:P0}]:");
+                        sb.AppendLine(PatientAiSanitizer.WrapUntrustedText(s.TextContent));
+                    }
+                    sb.AppendLine("</retrieved_patient_knowledge>\n");
+                    ragContextBlock = sb.ToString();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to retrieve RAG context for prompt grounding.");
+            }
+        }
+
         contents.Add(new JsonObject
         {
             ["role"] = "user",
             ["parts"] = new JsonArray(new JsonObject
             {
-                ["text"] = $"{contextHeader}Clinician prompt:\n{PatientAiSanitizer.WrapUntrustedText(request.Message)}"
+                ["text"] = $"{contextHeader}{ragContextBlock}Clinician prompt:\n{PatientAiSanitizer.WrapUntrustedText(request.Message)}"
             })
         });
 
@@ -736,6 +802,56 @@ public class GeminiPatientAgentService : IAiPatientAgentService
 
                     proposals.Add(proposalDto);
                     return new { status = "pending_confirmation", proposal = proposalDto };
+                }
+
+                case "semantic_search_patient_history":
+                {
+                    var patientId = args.GetProperty("patientId").GetInt32();
+                    var query = args.GetProperty("query").GetString() ?? string.Empty;
+                    var topK = args.TryGetProperty("topK", out var kEl) ? Math.Clamp(kEl.GetInt32(), 1, 5) : 3;
+
+                    var patient = await _patientService.GetPatientByIdAsync(patientId, cancellationToken);
+                    if (patient == null) return new { error = $"Patient #{patientId} not found" };
+
+                    if (_ragService != null)
+                    {
+                        var ragMatches = await _ragService.SearchPatientKnowledgeAsync(patientId, query, topK, minScore: 0.30, cancellationToken);
+                        return new
+                        {
+                            patientId,
+                            query,
+                            matchesFound = ragMatches.Count,
+                            matches = ragMatches.Select(m => new
+                            {
+                                m.SourceType,
+                                m.SourceLabel,
+                                m.TextContent,
+                                m.SimilarityScore
+                            }).ToList()
+                        };
+                    }
+
+                    var fallbackMatches = patient.Consultations
+                        .Where(c => c.Diagnosis.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                                    (c.Symptoms != null && c.Symptoms.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
+                                    (c.Notes != null && c.Notes.Contains(query, StringComparison.OrdinalIgnoreCase)))
+                        .Take(topK)
+                        .Select(c => new
+                        {
+                            SourceType = "Consultation",
+                            SourceLabel = $"Consultation #{c.Id} ({c.ConsultationDate:yyyy-MM-dd})",
+                            TextContent = $"{c.Diagnosis}. {c.Symptoms}. {c.Notes}",
+                            SimilarityScore = 0.85
+                        })
+                        .ToList();
+
+                    return new
+                    {
+                        patientId,
+                        query,
+                        matchesFound = fallbackMatches.Count,
+                        matches = fallbackMatches
+                    };
                 }
 
                 default:
@@ -969,6 +1085,22 @@ public class GeminiPatientAgentService : IAiPatientAgentService
                             ["diagnosis"] = new JsonObject { ["type"] = "STRING" }
                         },
                         ["required"] = new JsonArray("patientId", "diagnosis")
+                    }
+                },
+                new JsonObject
+                {
+                    ["name"] = "semantic_search_patient_history",
+                    ["description"] = "Semantic vector search across patient past consultations, symptoms, treatments, and uploaded clinical documents/lab reports.",
+                    ["parameters"] = new JsonObject
+                    {
+                        ["type"] = "OBJECT",
+                        ["properties"] = new JsonObject
+                        {
+                            ["patientId"] = new JsonObject { ["type"] = "INTEGER", ["description"] = "The target patient ID." },
+                            ["query"] = new JsonObject { ["type"] = "STRING", ["description"] = "Natural language clinical query." },
+                            ["topK"] = new JsonObject { ["type"] = "INTEGER", ["description"] = "Number of snippets to retrieve (1-5)." }
+                        },
+                        ["required"] = new JsonArray("patientId", "query")
                     }
                 })
         }

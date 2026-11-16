@@ -14,15 +14,18 @@ public class ConsultationService : IConsultationService
     private readonly ApplicationDbContext _dbContext;
     private readonly ILogger<ConsultationService> _logger;
     private readonly ICurrentUserService? _currentUser;
+    private readonly IPatientRagService? _ragService;
 
     public ConsultationService(
         ApplicationDbContext dbContext,
         ILogger<ConsultationService> logger,
-        ICurrentUserService? currentUser = null)
+        ICurrentUserService? currentUser = null,
+        IPatientRagService? ragService = null)
     {
         _dbContext = dbContext;
         _logger = logger;
         _currentUser = currentUser;
+        _ragService = ragService;
     }
 
     public async Task<IEnumerable<ConsultationResponseDto>> GetConsultationsAsync(
@@ -112,6 +115,18 @@ public class ConsultationService : IConsultationService
         _dbContext.Consultations.Add(consultation);
         await _dbContext.SaveChangesAsync(cancellationToken);
 
+        if (_ragService != null)
+        {
+            try
+            {
+                await _ragService.IndexConsultationAsync(consultation.Id, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to asynchronously index consultation #{Id} into RAG store.", consultation.Id);
+            }
+        }
+
         consultation.Patient = patient;
         return MapToResponseDto(consultation);
     }
@@ -169,6 +184,19 @@ public class ConsultationService : IConsultationService
         consultation.UpdatedAtUtc = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+
+        if (_ragService != null)
+        {
+            try
+            {
+                await _ragService.IndexConsultationAsync(consultation.Id, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to reindex updated consultation #{Id} into RAG store.", consultation.Id);
+            }
+        }
+
         return MapToResponseDto(consultation);
     }
 

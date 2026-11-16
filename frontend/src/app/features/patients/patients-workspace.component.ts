@@ -5,7 +5,7 @@ import { Router } from '@angular/router';
 import { AuthService } from '../../core/auth.service';
 import { ApiService } from '../../services/api.service';
 import { extractApiErrorMessage } from '../../core/http-error.util';
-import { Doctor, PagedResult, PatientDetail, PatientSummary } from '../../models/patient.models';
+import { Doctor, PagedResult, PatientDetail, PatientDocumentDto, PatientSummary, RagSearchResultDto } from '../../models/patient.models';
 
 @Component({
   selector: 'app-patients-workspace',
@@ -164,6 +164,115 @@ import { Doctor, PagedResult, PatientDetail, PatientSummary } from '../../models
               </div>
             </div>
           </div>
+
+          <!-- Clinical Documents & RAG Knowledge Section -->
+          <div class="detail-section">
+            <div class="section-header-row">
+              <h4>Clinical Records & Knowledge (RAG)</h4>
+              <button
+                type="button"
+                class="btn btn-secondary btn-sm"
+                (click)="reindexConsultations()"
+                [disabled]="reindexing() || !selectedPatient()"
+                title="Reindex past consultation notes into RAG vector store"
+              >
+                {{ reindexing() ? 'Reindexing...' : '⚡ Reindex Visits' }}
+              </button>
+            </div>
+
+            <!-- Upload Document Form -->
+            <div class="rag-upload-box">
+              <div class="rag-upload-row">
+                <input
+                  type="file"
+                  id="rag-file-input"
+                  class="sr-only"
+                  accept=".pdf,.txt"
+                  (change)="onDocFileSelected($event)"
+                />
+                <label for="rag-file-input" class="btn btn-secondary btn-sm">
+                  📎 Attach File (.pdf, .txt)
+                </label>
+                <span class="file-name" *ngIf="selectedDocFile">{{ selectedDocFile.name }}</span>
+                <span class="file-name muted" *ngIf="!selectedDocFile">No file chosen</span>
+
+                <select class="form-select form-select-sm doc-type-select" [(ngModel)]="docUploadType">
+                  <option value="General">General</option>
+                  <option value="LabReport">Lab Report</option>
+                  <option value="DischargeSummary">Discharge Summary</option>
+                  <option value="ClinicalNote">Clinical Note</option>
+                  <option value="ReferralLetter">Referral Letter</option>
+                </select>
+
+                <button
+                  type="button"
+                  class="btn btn-primary btn-sm"
+                  (click)="uploadDocument()"
+                  [disabled]="!selectedDocFile || uploadingDocument()"
+                >
+                  {{ uploadingDocument() ? 'Indexing...' : 'Upload & Index' }}
+                </button>
+              </div>
+              <div *ngIf="uploadDocumentError()" class="field-error">{{ uploadDocumentError() }}</div>
+            </div>
+
+            <!-- Document List -->
+            <div *ngIf="documentsLoading()" class="muted small">Loading records...</div>
+            <div *ngIf="!documentsLoading() && patientDocuments().length === 0" class="muted small">
+              No clinical documents uploaded yet. Upload .pdf or .txt records to index into RAG vector store.
+            </div>
+            <div *ngIf="patientDocuments().length > 0" class="doc-list">
+              <div *ngFor="let doc of patientDocuments()" class="doc-item">
+                <div class="doc-info">
+                  <span class="badge badge-primary">{{ doc.documentType }}</span>
+                  <strong>{{ doc.fileName }}</strong>
+                  <span class="muted">({{ doc.totalChunks }} chunks • {{ (doc.fileSizeBytes / 1024).toFixed(1) }} KB)</span>
+                </div>
+                <button
+                  *ngIf="auth.isAdmin() || auth.isDoctor()"
+                  type="button"
+                  class="btn btn-secondary btn-sm btn-danger-text"
+                  (click)="deleteDocument(doc.id)"
+                  title="Delete document and remove its chunks"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            <!-- Semantic Search across records -->
+            <div class="rag-search-box">
+              <h5 class="rag-search-title">Semantic History Search (RAG)</h5>
+              <div class="rag-search-row">
+                <input
+                  class="form-control form-control-sm"
+                  placeholder="e.g., penicillin allergy, hypertension medications, asthma..."
+                  [(ngModel)]="ragSearchQuery"
+                  (keyup.enter)="executeRagSearch()"
+                />
+                <button
+                  type="button"
+                  class="btn btn-purple btn-sm"
+                  (click)="executeRagSearch()"
+                  [disabled]="ragSearching() || !ragSearchQuery.trim()"
+                >
+                  {{ ragSearching() ? 'Searching...' : 'Search' }}
+                </button>
+              </div>
+
+              <div *ngIf="ragSearchResults().length > 0" class="rag-results">
+                <div *ngFor="let res of ragSearchResults()" class="rag-result-card">
+                  <div class="rag-result-header">
+                    <span class="badge" [class.badge-primary]="res.sourceType === 'Consultation'" [class.badge-secondary]="res.sourceType !== 'Consultation'">
+                      {{ res.sourceLabel }}
+                    </span>
+                    <span class="rag-score-badge">{{ (res.similarityScore * 100).toFixed(0) }}% match</span>
+                  </div>
+                  <p class="rag-snippet">{{ res.textContent }}</p>
+                </div>
+              </div>
+            </div>
+          </div>
         </ng-container>
       </aside>
     </div>
@@ -284,6 +393,23 @@ import { Doctor, PagedResult, PatientDetail, PatientSummary } from '../../models
     .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; }
     .field-error { color: #b91c1c; font-size: 0.75rem; }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+    .section-header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+    .rag-upload-box { background: var(--bg-page); border: 1px dashed var(--border); border-radius: var(--radius-md); padding: 0.75rem; margin-bottom: 0.75rem; }
+    .rag-upload-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+    .doc-type-select { width: auto; min-width: 130px; }
+    .file-name { font-size: 0.8rem; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .doc-list { display: flex; flex-direction: column; gap: 0.4rem; margin-bottom: 0.75rem; }
+    .doc-item { display: flex; justify-content: space-between; align-items: center; background: white; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.45rem 0.6rem; font-size: 0.82rem; }
+    .doc-info { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+    .btn-danger-text { color: #b91c1c; border-color: #fecaca; }
+    .rag-search-box { background: #fdf8ff; border: 1px solid #f3e8ff; border-radius: var(--radius-md); padding: 0.75rem; margin-top: 0.75rem; }
+    .rag-search-title { font-size: 0.88rem; font-weight: 700; color: #6b21a8; margin-bottom: 0.5rem; }
+    .rag-search-row { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
+    .rag-results { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; }
+    .rag-result-card { background: white; border: 1px solid #e9d5ff; border-radius: var(--radius-sm); padding: 0.6rem; font-size: 0.82rem; }
+    .rag-result-header { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.35rem; }
+    .rag-score-badge { font-weight: 700; color: #7c3aed; font-size: 0.75rem; background: #ede9fe; padding: 0.15rem 0.4rem; border-radius: 9999px; }
+    .rag-snippet { margin: 0; color: var(--text-main); font-size: 0.8rem; line-height: 1.35; }
   `]
 })
 export class PatientsWorkspaceComponent implements OnInit, OnDestroy {
@@ -304,6 +430,18 @@ export class PatientsWorkspaceComponent implements OnInit, OnDestroy {
   readonly errorMessage = signal('');
   readonly modalError = signal('');
   readonly toastMessage = signal('');
+
+  readonly patientDocuments = signal<PatientDocumentDto[]>([]);
+  readonly documentsLoading = signal(false);
+  readonly uploadingDocument = signal(false);
+  readonly uploadDocumentError = signal('');
+  readonly ragSearching = signal(false);
+  readonly ragSearchResults = signal<RagSearchResultDto[]>([]);
+  readonly reindexing = signal(false);
+
+  selectedDocFile: File | null = null;
+  docUploadType = 'General';
+  ragSearchQuery = '';
 
   searchTerm = '';
   genderFilter = '';
@@ -358,6 +496,9 @@ export class PatientsWorkspaceComponent implements OnInit, OnDestroy {
         this.selectedPatient.set(res.data);
         this.detailLoading.set(false);
         this.resolvePicture(res.data.profilePictureUrl);
+        this.loadPatientDocuments(id);
+        this.ragSearchResults.set([]);
+        this.ragSearchQuery = '';
       },
       error: err => {
         this.detailLoading.set(false);
@@ -516,6 +657,119 @@ export class PatientsWorkspaceComponent implements OnInit, OnDestroy {
         this.selectedPictureSrc.set(this.activeBlobObjectUrl);
       },
       error: () => this.selectedPictureSrc.set(null)
+    });
+  }
+
+  loadPatientDocuments(patientId: number): void {
+    this.documentsLoading.set(true);
+    this.api.getPatientDocuments(patientId).subscribe({
+      next: res => {
+        this.patientDocuments.set(res.data || []);
+        this.documentsLoading.set(false);
+      },
+      error: () => this.documentsLoading.set(false)
+    });
+  }
+
+  onDocFileSelected(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0] ?? null;
+    this.uploadDocumentError.set('');
+    if (!file) {
+      this.selectedDocFile = null;
+      return;
+    }
+
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    if (ext !== 'pdf' && ext !== 'txt') {
+      this.uploadDocumentError.set('Only .pdf and .txt files are supported.');
+      this.selectedDocFile = null;
+      input.value = '';
+      return;
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      this.uploadDocumentError.set('File exceeds the 10 MB limit.');
+      this.selectedDocFile = null;
+      input.value = '';
+      return;
+    }
+
+    this.selectedDocFile = file;
+  }
+
+  uploadDocument(): void {
+    const p = this.selectedPatient();
+    if (!p || !this.selectedDocFile) return;
+
+    this.uploadingDocument.set(true);
+    this.uploadDocumentError.set('');
+
+    this.api.uploadPatientDocument(p.id, this.selectedDocFile, {
+      documentType: this.docUploadType
+    }).subscribe({
+      next: res => {
+        this.uploadingDocument.set(false);
+        this.selectedDocFile = null;
+        this.toastMessage.set(`Document '${res.data.fileName}' indexed into RAG vector store.`);
+        this.loadPatientDocuments(p.id);
+        setTimeout(() => this.toastMessage.set(''), 4000);
+      },
+      error: err => {
+        this.uploadingDocument.set(false);
+        this.uploadDocumentError.set(extractApiErrorMessage(err));
+      }
+    });
+  }
+
+  deleteDocument(docId: number): void {
+    const p = this.selectedPatient();
+    if (!p) return;
+
+    if (!confirm('Delete this document and remove its indexed chunks?')) return;
+
+    this.api.deletePatientDocument(p.id, docId).subscribe({
+      next: () => {
+        this.toastMessage.set('Document removed from RAG index.');
+        this.loadPatientDocuments(p.id);
+        setTimeout(() => this.toastMessage.set(''), 4000);
+      },
+      error: err => this.errorMessage.set(extractApiErrorMessage(err))
+    });
+  }
+
+  executeRagSearch(): void {
+    const p = this.selectedPatient();
+    if (!p || !this.ragSearchQuery.trim()) return;
+
+    this.ragSearching.set(true);
+    this.api.searchPatientRag(p.id, this.ragSearchQuery.trim()).subscribe({
+      next: res => {
+        this.ragSearchResults.set(res.data || []);
+        this.ragSearching.set(false);
+      },
+      error: err => {
+        this.ragSearching.set(false);
+        this.errorMessage.set(extractApiErrorMessage(err));
+      }
+    });
+  }
+
+  reindexConsultations(): void {
+    const p = this.selectedPatient();
+    if (!p) return;
+
+    this.reindexing.set(true);
+    this.api.reindexPatientConsultations(p.id).subscribe({
+      next: res => {
+        this.reindexing.set(false);
+        this.toastMessage.set(`Successfully indexed ${res.data.consultationsIndexed} consultation(s) into RAG vector store.`);
+        setTimeout(() => this.toastMessage.set(''), 4000);
+      },
+      error: err => {
+        this.reindexing.set(false);
+        this.errorMessage.set(extractApiErrorMessage(err));
+      }
     });
   }
 
