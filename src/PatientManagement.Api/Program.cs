@@ -7,12 +7,14 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using PatientManagement.Api.Filters;
 using PatientManagement.Api.Middleware;
 using PatientManagement.Api.Services;
 using PatientManagement.Core.Interfaces;
+using PatientManagement.Core.Options;
 using PatientManagement.Infrastructure;
 using PatientManagement.Infrastructure.Data;
 using PatientManagement.Infrastructure.Validation;
@@ -96,15 +98,30 @@ builder.Services.AddRateLimiter(options =>
             }));
 });
 
-// 5. JWT Bearer Authentication (Built-in JWT + optional Azure AD / Entra ID)
+// 5. JWT Options & Bearer Authentication (Built-in JWT + optional Azure AD / Entra ID)
+builder.Services.AddOptions<JwtOptions>()
+    .BindConfiguration(JwtOptions.SectionName)
+    .PostConfigure(options =>
+    {
+        if (string.IsNullOrWhiteSpace(options.SigningKey))
+        {
+            var envKey = Environment.GetEnvironmentVariable("JWT_SIGNING_KEY");
+            if (!string.IsNullOrWhiteSpace(envKey))
+            {
+                options.SigningKey = envKey;
+            }
+        }
+    });
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer();
 
 builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
-    .Configure<IConfiguration>((options, config) =>
+    .Configure<IOptions<JwtOptions>, IConfiguration>((options, jwtOptionsAccessor, config) =>
     {
+        var jwtOptions = jwtOptionsAccessor.Value;
         var entraAuthority = config["AzureAd:Authority"];
-        var jwtAudience = config["Jwt:Audience"] ?? "PatientManagement.Client";
+        var jwtAudience = string.IsNullOrWhiteSpace(jwtOptions.Audience) ? "PatientManagement.Client" : jwtOptions.Audience;
         if (!string.IsNullOrWhiteSpace(entraAuthority))
         {
             options.Authority = entraAuthority;
@@ -112,10 +129,12 @@ builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationSc
         }
         else
         {
-            var jwtKey = config["Jwt:SigningKey"]
-                ?? Environment.GetEnvironmentVariable("JWT_SIGNING_KEY")
-                ?? "DEV_ONLY_REPLACE_IN_PRODUCTION_WITH_32+_CHAR_KEY_1234567890";
-            var jwtIssuer = config["Jwt:Issuer"] ?? "PatientManagement.Api";
+            if (string.IsNullOrWhiteSpace(jwtOptions.SigningKey))
+            {
+                throw new InvalidOperationException("Jwt:SigningKey must be configured.");
+            }
+
+            var jwtIssuer = string.IsNullOrWhiteSpace(jwtOptions.Issuer) ? "PatientManagement.Api" : jwtOptions.Issuer;
 
             options.TokenValidationParameters = new TokenValidationParameters
             {
@@ -125,7 +144,7 @@ builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationSc
                 ValidateIssuerSigningKey = true,
                 ValidIssuer = jwtIssuer,
                 ValidAudience = jwtAudience,
-                IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
+                IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.SigningKey)),
                 ClockSkew = TimeSpan.FromMinutes(1)
             };
         }
@@ -173,6 +192,15 @@ builder.Services.AddSwaggerGen(c =>
 });
 
 var app = builder.Build();
+
+var jwtKey = app.Services.GetRequiredService<IOptions<JwtOptions>>().Value.SigningKey;
+if (!app.Environment.IsDevelopment() &&
+    (string.IsNullOrWhiteSpace(jwtKey) ||
+     jwtKey.Length < 32 ||
+     jwtKey.StartsWith("DEV_ONLY", StringComparison.OrdinalIgnoreCase)))
+{
+    throw new InvalidOperationException("Jwt:SigningKey must be configured.");
+}
 
 app.UseSerilogRequestLogging();
 app.UseMiddleware<ExceptionHandlingMiddleware>();

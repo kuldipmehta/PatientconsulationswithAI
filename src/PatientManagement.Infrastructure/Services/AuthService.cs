@@ -3,12 +3,13 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using PatientManagement.Core.DTOs.Auth;
 using PatientManagement.Core.Entities;
 using PatientManagement.Core.Interfaces;
+using PatientManagement.Core.Options;
 using PatientManagement.Infrastructure.Data;
 
 namespace PatientManagement.Infrastructure.Services;
@@ -55,16 +56,16 @@ public static class PasswordHasher
 public class AuthService : IAuthService
 {
     private readonly ApplicationDbContext _dbContext;
-    private readonly IConfiguration _configuration;
+    private readonly JwtOptions _jwtOptions;
     private readonly ILogger<AuthService> _logger;
 
     public AuthService(
         ApplicationDbContext dbContext,
-        IConfiguration configuration,
+        IOptions<JwtOptions> jwtOptions,
         ILogger<AuthService> logger)
     {
         _dbContext = dbContext;
-        _configuration = configuration;
+        _jwtOptions = jwtOptions.Value;
         _logger = logger;
     }
 
@@ -143,13 +144,15 @@ public class AuthService : IAuthService
 
     private (string Token, DateTime ExpiresAtUtc) GenerateJwtToken(AppUser user)
     {
-        var signingKey = _configuration["Jwt:SigningKey"]
-            ?? Environment.GetEnvironmentVariable("JWT_SIGNING_KEY")
-            ?? "DEV_ONLY_REPLACE_IN_PRODUCTION_WITH_32+_CHAR_KEY_1234567890";
+        var signingKey = _jwtOptions.SigningKey;
+        if (string.IsNullOrWhiteSpace(signingKey))
+        {
+            throw new InvalidOperationException("Jwt:SigningKey is not configured.");
+        }
 
-        var issuer = _configuration["Jwt:Issuer"] ?? "PatientManagement.Api";
-        var audience = _configuration["Jwt:Audience"] ?? "PatientManagement.Client";
-        var expiryMinutes = int.TryParse(_configuration["Jwt:ExpiryMinutes"], out var mins) ? mins : 480;
+        var issuer = string.IsNullOrWhiteSpace(_jwtOptions.Issuer) ? "PatientManagement.Api" : _jwtOptions.Issuer;
+        var audience = string.IsNullOrWhiteSpace(_jwtOptions.Audience) ? "PatientManagement.Client" : _jwtOptions.Audience;
+        var expiryMinutes = _jwtOptions.ExpiryMinutes > 0 ? _jwtOptions.ExpiryMinutes : 480;
 
         var expiresAt = DateTime.UtcNow.AddMinutes(expiryMinutes);
         var claims = new List<Claim>

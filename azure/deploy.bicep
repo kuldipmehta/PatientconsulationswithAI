@@ -11,6 +11,11 @@ param sqlAdminUsername string = 'patientadmin'
 @secure()
 param sqlAdminPassword string
 
+@description('JWT Signing Key (minimum 32 characters; do not start with DEV_ONLY)')
+@minLength(32)
+@secure()
+param jwtSigningKey string
+
 @description('App Service pricing tier')
 param appServiceSku string = 'B1'
 
@@ -122,6 +127,10 @@ resource webApp 'Microsoft.Web/sites@2022-09-01' = {
         {
           name: 'AzureBlobStorage__ContainerName'
           value: containerName
+        }
+        {
+          name: 'Jwt__SigningKey'
+          value: jwtSigningKey
         }
       ]
     }
