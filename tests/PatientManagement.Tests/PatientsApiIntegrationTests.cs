@@ -247,6 +247,51 @@ public class PatientsApiIntegrationTests : IClassFixture<CustomWebApplicationFac
     }
 
     [Fact]
+    public async Task Consultations_DoctorBCannotAttachToDoctorAPatientWithOwnDoctorId_Returns403AndForcesCurrentDoctor()
+    {
+        var adminClient = await CreateAuthenticatedClientAsync("admin@patientportal.com", "Admin@12345");
+        var doctorAClient = await CreateAuthenticatedClientAsync("sarah.jenkins@patientportal.com", "Doctor@12345");
+        var doctorBClient = await CreateAuthenticatedClientAsync("robert.sterling@patientportal.com", "Doctor@12345");
+
+        // Find Doctor A's patient (PrimaryDoctorId == 1)
+        var allPatientsRes = await adminClient.GetFromJsonAsync<ApiResponse<PagedResult<PatientSummaryDto>>>("/api/patients?pageSize=20", JsonOptions);
+        var doctorAPatient = allPatientsRes!.Data!.Items.First(p => p.PrimaryDoctorId == 1);
+
+        // 1. Doctor B (DoctorId = 2) tries to create a consultation for Doctor A's patient with their own DoctorId = 2 -> 403 Forbidden
+        var unauthorizedAttempt = new CreateConsultationDto
+        {
+            PatientId = doctorAPatient.Id,
+            DoctorId = 2,
+            DoctorName = "Dr. Robert Sterling",
+            ConsultationDate = new DateTime(2026, 12, 20, 14, 0, 0, DateTimeKind.Utc),
+            DurationMinutes = 30,
+            Diagnosis = "Unauthorized cross-doctor attachment",
+            Status = ConsultationStatus.Scheduled
+        };
+
+        var forbiddenRes = await doctorBClient.PostAsJsonAsync("/api/consultations", unauthorizedAttempt);
+        forbiddenRes.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        // 2. Doctor A (DoctorId = 1) creates a consultation for Doctor A's patient while passing DoctorId = 2 -> succeeds, DoctorId forced to 1
+        var spoofedDoctorRequest = new CreateConsultationDto
+        {
+            PatientId = doctorAPatient.Id,
+            DoctorId = 2,
+            DoctorName = "Dr. Robert Sterling",
+            ConsultationDate = new DateTime(2026, 12, 21, 14, 0, 0, DateTimeKind.Utc),
+            DurationMinutes = 30,
+            Diagnosis = "Follow-up visit",
+            Status = ConsultationStatus.Scheduled
+        };
+
+        var createdRes = await doctorAClient.PostAsJsonAsync("/api/consultations", spoofedDoctorRequest);
+        createdRes.StatusCode.Should().Be(HttpStatusCode.Created, because: await createdRes.Content.ReadAsStringAsync());
+        var createdPayload = await createdRes.Content.ReadFromJsonAsync<ApiResponse<ConsultationResponseDto>>(JsonOptions);
+        createdPayload!.Data!.DoctorId.Should().Be(1);
+        createdPayload.Data.DoctorName.Should().Be("Dr. Sarah Jenkins, MD");
+    }
+
+    [Fact]
     public async Task AiEndpoints_StatusChatStreamAndEmergencyTriage_WorkSafely()
     {
         var doctorClient = await CreateAuthenticatedClientAsync("sarah.jenkins@patientportal.com", "Doctor@12345");

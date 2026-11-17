@@ -82,10 +82,16 @@ public class ConsultationService : IConsultationService
             throw new KeyNotFoundException($"Patient with ID {dto.PatientId} was not found.");
         }
 
-        EnsureDoctorAccess(patient, dto.DoctorId);
+        var isDoctor = _currentUser is { IsAuthenticated: true, Role: UserRole.Doctor };
+        if (isDoctor)
+        {
+            EnsureDoctorAccess(patient, consultationDoctorId: null);
+        }
 
-        var resolvedDoctor = await ResolveDoctorAsync(dto.DoctorId, dto.DoctorName, cancellationToken);
-        var doctorId = resolvedDoctor?.Id ?? dto.DoctorId;
+        // For the Doctor role, force DoctorId to the current doctor, ignoring any value supplied in the request
+        var requestedDoctorId = isDoctor ? _currentUser!.DoctorId : dto.DoctorId;
+        var resolvedDoctor = await ResolveDoctorAsync(requestedDoctorId, dto.DoctorName, cancellationToken);
+        var doctorId = isDoctor ? _currentUser!.DoctorId : (resolvedDoctor?.Id ?? dto.DoctorId);
         var doctorName = resolvedDoctor?.FullName ?? dto.DoctorName.Trim();
         var startUtc = dto.ConsultationDate == default ? DateTime.UtcNow : dto.ConsultationDate;
         var duration = dto.DurationMinutes > 0 ? dto.DurationMinutes : 30;
@@ -225,11 +231,15 @@ public class ConsultationService : IConsultationService
 
     private void EnsureDoctorAccess(Patient patient, int? consultationDoctorId)
     {
-        if (_currentUser is { IsAuthenticated: true, Role: UserRole.Doctor } &&
-            patient.PrimaryDoctorId != _currentUser.DoctorId &&
-            consultationDoctorId != _currentUser.DoctorId)
+        if (_currentUser is { IsAuthenticated: true, Role: UserRole.Doctor })
         {
-            throw new ForbiddenAccessException("Doctor does not have access to this patient's consultation.");
+            var isPrimaryDoctor = _currentUser.DoctorId.HasValue && patient.PrimaryDoctorId == _currentUser.DoctorId;
+            var isConsultationDoctor = _currentUser.DoctorId.HasValue && consultationDoctorId == _currentUser.DoctorId;
+
+            if (!isPrimaryDoctor && !isConsultationDoctor)
+            {
+                throw new ForbiddenAccessException("Doctor does not have access to this patient's consultation.");
+            }
         }
     }
 
