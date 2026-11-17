@@ -439,6 +439,11 @@ public class PatientRagService : IPatientRagService
 
     private async Task<Patient> EnsurePatientAccessAsync(int patientId, CancellationToken cancellationToken)
     {
+        if (_currentUser is { IsAuthenticated: true, Role: UserRole.Doctor } && !_currentUser.DoctorId.HasValue)
+        {
+            throw new ForbiddenAccessException("Doctor account is not linked to a valid DoctorId.");
+        }
+
         var patient = await _dbContext.Patients
             .FirstOrDefaultAsync(p => p.Id == patientId, cancellationToken);
 
@@ -447,9 +452,7 @@ public class PatientRagService : IPatientRagService
             throw new KeyNotFoundException($"Patient with ID {patientId} not found.");
         }
 
-        if (_currentUser is { IsAuthenticated: true } &&
-            _currentUser.Role == UserRole.Doctor &&
-            patient.PrimaryDoctorId.HasValue &&
+        if (_currentUser is { IsAuthenticated: true, Role: UserRole.Doctor } &&
             patient.PrimaryDoctorId != _currentUser.DoctorId)
         {
             throw new ForbiddenAccessException("You are not authorized to view or modify records for this patient.");

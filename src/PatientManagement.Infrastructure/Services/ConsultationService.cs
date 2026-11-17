@@ -32,14 +32,25 @@ public class ConsultationService : IConsultationService
         int? patientId = null,
         CancellationToken cancellationToken = default)
     {
+        int? currentDoctorId = null;
+        if (_currentUser is { IsAuthenticated: true, Role: UserRole.Doctor })
+        {
+            if (!_currentUser.DoctorId.HasValue)
+            {
+                throw new ForbiddenAccessException("Doctor account is not linked to a valid DoctorId.");
+            }
+
+            currentDoctorId = _currentUser.DoctorId.Value;
+        }
+
         var query = _dbContext.Consultations
             .AsNoTracking()
             .Include(c => c.Patient)
             .AsQueryable();
 
-        if (_currentUser is { IsAuthenticated: true, Role: UserRole.Doctor })
+        if (currentDoctorId.HasValue)
         {
-            query = query.Where(c => c.Patient.PrimaryDoctorId == _currentUser.DoctorId || c.DoctorId == _currentUser.DoctorId);
+            query = query.Where(c => c.Patient.PrimaryDoctorId == currentDoctorId.Value || c.DoctorId == currentDoctorId.Value);
         }
 
         if (patientId.HasValue)

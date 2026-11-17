@@ -38,15 +38,17 @@ public class PatientService : IPatientService
         PatientFilterParams filter,
         CancellationToken cancellationToken = default)
     {
+        var doctorId = EnsureValidDoctorIdentity();
+
         var query = _dbContext.Patients
             .AsNoTracking()
             .Include(p => p.PrimaryDoctor)
             .AsQueryable();
 
         // Restrict doctors to their own assigned patients
-        if (_currentUser is { IsAuthenticated: true, Role: UserRole.Doctor })
+        if (doctorId.HasValue)
         {
-            query = query.Where(p => p.PrimaryDoctorId == _currentUser.DoctorId);
+            query = query.Where(p => p.PrimaryDoctorId == doctorId.Value);
         }
 
         if (!string.IsNullOrWhiteSpace(filter.SearchTerm))
@@ -135,6 +137,8 @@ public class PatientService : IPatientService
 
     public async Task<PatientResponseDto?> GetPatientByIdAsync(int id, CancellationToken cancellationToken = default)
     {
+        EnsureValidDoctorIdentity();
+
         var patient = await _dbContext.Patients
             .AsNoTracking()
             .Include(p => p.PrimaryDoctor)
@@ -153,6 +157,8 @@ public class PatientService : IPatientService
 
     public async Task<PatientResponseDto> CreatePatientAsync(CreatePatientDto dto, CancellationToken cancellationToken = default)
     {
+        var currentDoctorId = EnsureValidDoctorIdentity();
+
         string? pictureBlobName = null;
         string? pictureUrl = null;
 
@@ -169,11 +175,7 @@ public class PatientService : IPatientService
             pictureUrl = uploadResult.BlobUrl;
         }
 
-        int? assignedDoctorId = dto.PrimaryDoctorId;
-        if (_currentUser is { IsAuthenticated: true, Role: UserRole.Doctor })
-        {
-            assignedDoctorId = _currentUser.DoctorId;
-        }
+        int? assignedDoctorId = currentDoctorId ?? dto.PrimaryDoctorId;
 
         var patient = new Patient
         {
@@ -220,6 +222,8 @@ public class PatientService : IPatientService
         UpdatePatientDto dto,
         CancellationToken cancellationToken = default)
     {
+        EnsureValidDoctorIdentity();
+
         var patient = await _dbContext.Patients
             .Include(p => p.PrimaryDoctor)
             .Include(p => p.Consultations)
@@ -293,6 +297,8 @@ public class PatientService : IPatientService
 
     public async Task<bool> DeletePatientAsync(int id, CancellationToken cancellationToken = default)
     {
+        EnsureValidDoctorIdentity();
+
         var patient = await _dbContext.Patients
             .Include(p => p.Consultations)
             .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
@@ -325,6 +331,8 @@ public class PatientService : IPatientService
 
     public async Task<BlobReadResult?> GetPatientPictureAsync(int id, CancellationToken cancellationToken = default)
     {
+        EnsureValidDoctorIdentity();
+
         var patient = await _dbContext.Patients
             .AsNoTracking()
             .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
@@ -344,10 +352,25 @@ public class PatientService : IPatientService
         return await _blobStorageService.OpenReadAsync(patient.ProfilePictureBlobName, cancellationToken: cancellationToken);
     }
 
+    private int? EnsureValidDoctorIdentity()
+    {
+        if (_currentUser is { IsAuthenticated: true, Role: UserRole.Doctor })
+        {
+            if (!_currentUser.DoctorId.HasValue)
+            {
+                throw new ForbiddenAccessException("Doctor account is not linked to a valid DoctorId.");
+            }
+
+            return _currentUser.DoctorId.Value;
+        }
+
+        return null;
+    }
+
     private void EnsureDoctorOwnership(Patient patient)
     {
-        if (_currentUser is { IsAuthenticated: true, Role: UserRole.Doctor } &&
-            patient.PrimaryDoctorId != _currentUser.DoctorId)
+        var doctorId = EnsureValidDoctorIdentity();
+        if (doctorId.HasValue && patient.PrimaryDoctorId != doctorId.Value)
         {
             throw new ForbiddenAccessException($"Doctor is not assigned to patient #{patient.Id}.");
         }

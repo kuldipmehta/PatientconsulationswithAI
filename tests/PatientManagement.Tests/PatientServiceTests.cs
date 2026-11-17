@@ -274,6 +274,41 @@ public class PatientServiceTests : IDisposable
             _patientService.UpdatePatientAsync(patient.Id, updateDto));
     }
 
+    [Fact]
+    public async Task DoctorWithNullDoctorId_ThrowsForbiddenAccessException_InsteadOfMatchingUnassignedPatients()
+    {
+        // Arrange: An unassigned patient (PrimaryDoctorId = null) exists in the database
+        var unassignedPatient = new Patient
+        {
+            FirstName = "Unassigned",
+            LastName = "Patient",
+            Email = "unassigned@example.com",
+            Age = 35,
+            Gender = "Other",
+            PrimaryDoctorId = null
+        };
+        _dbContext.Patients.Add(unassignedPatient);
+        await _dbContext.SaveChangesAsync();
+
+        var unlinkedDoctor = new Mock<ICurrentUserService>();
+        unlinkedDoctor.SetupGet(u => u.IsAuthenticated).Returns(true);
+        unlinkedDoctor.SetupGet(u => u.Role).Returns(UserRole.Doctor);
+        unlinkedDoctor.SetupGet(u => u.DoctorId).Returns((int?)null);
+
+        var scopedService = new PatientService(
+            _dbContext,
+            _blobStorageMock.Object,
+            _emailServiceMock.Object,
+            _loggerMock.Object,
+            unlinkedDoctor.Object);
+
+        // Act & Assert: All patient operations throw ForbiddenAccessException instead of matching null == null
+        await Assert.ThrowsAsync<ForbiddenAccessException>(() => scopedService.GetPatientsAsync(new PatientFilterParams()));
+        await Assert.ThrowsAsync<ForbiddenAccessException>(() => scopedService.GetPatientByIdAsync(unassignedPatient.Id));
+        await Assert.ThrowsAsync<ForbiddenAccessException>(() => scopedService.DeletePatientAsync(unassignedPatient.Id));
+        await Assert.ThrowsAsync<ForbiddenAccessException>(() => scopedService.GetPatientPictureAsync(unassignedPatient.Id));
+    }
+
     public void Dispose()
     {
         _dbContext.Database.EnsureDeleted();

@@ -15,8 +15,10 @@ using PatientManagement.Core.DTOs.Auth;
 using PatientManagement.Core.DTOs.Common;
 using PatientManagement.Core.DTOs.Consultations;
 using PatientManagement.Core.DTOs.Patients;
+using PatientManagement.Core.Entities;
 using PatientManagement.Core.Enums;
 using PatientManagement.Infrastructure.Data;
+using PatientManagement.Infrastructure.Services;
 using Xunit;
 
 namespace PatientManagement.Tests;
@@ -326,5 +328,48 @@ public class PatientsApiIntegrationTests : IClassFixture<CustomWebApplicationFac
         var triageBody = await triageRes.Content.ReadAsStringAsync();
         triageBody.Should().Contain("Emergency");
         triageBody.Should().Contain("911");
+    }
+
+    [Fact]
+    public async Task Patients_DoctorWithNoLinkedDoctorId_Returns403ForbiddenInsteadOfUnassignedPatients()
+    {
+        // Arrange: Seed an unassigned patient (PrimaryDoctorId = null) and a Doctor user with DoctorId = null
+        int unassignedPatientId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var unassigned = new Patient
+            {
+                FirstName = "Orphan",
+                LastName = "Unassigned",
+                Email = $"orphan.{Guid.NewGuid():N}@example.com",
+                Age = 41,
+                Gender = "Male",
+                PrimaryDoctorId = null
+            };
+            db.Patients.Add(unassigned);
+
+            var unlinkedEmail = $"unlinked.doctor.{Guid.NewGuid():N}@patientportal.com";
+            db.AppUsers.Add(new AppUser
+            {
+                Email = unlinkedEmail,
+                FullName = "Dr. Unlinked Profile",
+                Role = UserRole.Doctor,
+                DoctorId = null,
+                PasswordHash = PasswordHasher.Hash("UnlinkedDoc@12345"),
+                IsActive = true
+            });
+            await db.SaveChangesAsync();
+            unassignedPatientId = unassigned.Id;
+
+            // Act: Authenticate as the Doctor with no linked DoctorId
+            var unlinkedDoctorClient = await CreateAuthenticatedClientAsync(unlinkedEmail, "UnlinkedDoc@12345");
+            var listRes = await unlinkedDoctorClient.GetAsync("/api/patients");
+            var detailRes = await unlinkedDoctorClient.GetAsync($"/api/patients/{unassignedPatientId}");
+
+            // Assert: Both return 403 Forbidden (never a list or details of unassigned patients)
+            listRes.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+            detailRes.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        }
     }
 }
