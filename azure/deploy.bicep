@@ -16,6 +16,10 @@ param sqlAdminPassword string
 @secure()
 param jwtSigningKey string
 
+@description('Google Gemini API Key (optional; leave empty for offline simulation or supply a Key Vault reference)')
+@secure()
+param geminiApiKey string = ''
+
 @description('App Service pricing tier')
 param appServiceSku string = 'B1'
 
@@ -131,6 +135,10 @@ resource webApp 'Microsoft.Web/sites@2022-09-01' = {
         {
           name: 'Jwt__SigningKey'
           value: jwtSigningKey
+        }
+        {
+          name: 'Gemini__ApiKey'
+          value: geminiApiKey
         }
       ]
     }
