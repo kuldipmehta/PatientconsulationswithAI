@@ -48,7 +48,7 @@ public class GeminiTextEmbeddingService : ITextEmbeddingService
 
         try
         {
-            var endpoint = $"{_baseUrl}/{EmbeddingModel}:embedContent?key={_configuredApiKey}";
+            var endpoint = $"{_baseUrl}/{EmbeddingModel}:embedContent";
             var payload = new JsonObject
             {
                 ["model"] = EmbeddingModel,
@@ -58,7 +58,13 @@ public class GeminiTextEmbeddingService : ITextEmbeddingService
                 }
             };
 
-            using var response = await _httpClient.PostAsJsonAsync(endpoint, payload, cancellationToken);
+            using var requestMessage = new HttpRequestMessage(HttpMethod.Post, endpoint)
+            {
+                Content = JsonContent.Create(payload)
+            };
+            requestMessage.Headers.Add("x-goog-api-key", _configuredApiKey);
+
+            using var response = await _httpClient.SendAsync(requestMessage, cancellationToken);
             if (response.IsSuccessStatusCode)
             {
                 var body = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -102,7 +108,7 @@ public class GeminiTextEmbeddingService : ITextEmbeddingService
 
         try
         {
-            var endpoint = $"{_baseUrl}/{EmbeddingModel}:batchEmbedContents?key={_configuredApiKey}";
+            var endpoint = $"{_baseUrl}/{EmbeddingModel}:batchEmbedContents";
             var requestsArray = new JsonArray();
             foreach (var t in texts)
             {
@@ -117,7 +123,13 @@ public class GeminiTextEmbeddingService : ITextEmbeddingService
             }
 
             var payload = new JsonObject { ["requests"] = requestsArray };
-            using var response = await _httpClient.PostAsJsonAsync(endpoint, payload, cancellationToken);
+            using var requestMessage = new HttpRequestMessage(HttpMethod.Post, endpoint)
+            {
+                Content = JsonContent.Create(payload)
+            };
+            requestMessage.Headers.Add("x-goog-api-key", _configuredApiKey);
+
+            using var response = await _httpClient.SendAsync(requestMessage, cancellationToken);
             if (response.IsSuccessStatusCode)
             {
                 var body = await response.Content.ReadAsStringAsync(cancellationToken);

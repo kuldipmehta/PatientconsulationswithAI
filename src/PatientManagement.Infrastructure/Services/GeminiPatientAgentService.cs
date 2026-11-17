@@ -32,7 +32,18 @@ public class GeminiPatientAgentService : IAiPatientAgentService
     private readonly IPatientRagService? _ragService;
     private readonly string? _configuredApiKey;
     private readonly string _defaultModel;
+    private readonly HashSet<string> _allowedModels;
     private readonly string _baseUrl;
+
+    private static readonly string[] DefaultAllowedModels =
+    [
+        "gemini-flash-latest",
+        "gemini-flash-lite-latest",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-pro",
+        "gemini-3-flash-preview"
+    ];
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -65,26 +76,54 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             ? null
             : rawKey.Trim();
 
-        _defaultModel = configuration["Gemini:Model"] ?? "gemini-flash-latest";
+        _defaultModel = string.IsNullOrWhiteSpace(configuration["Gemini:Model"])
+            ? "gemini-flash-latest"
+            : configuration["Gemini:Model"]!.Trim();
+
+        var configuredAllowed = configuration.GetSection("Gemini:AllowedModels").Get<string[]>();
+        _allowedModels = new HashSet<string>(
+            configuredAllowed is { Length: > 0 } ? configuredAllowed : DefaultAllowedModels,
+            StringComparer.OrdinalIgnoreCase);
+        _allowedModels.Add(_defaultModel);
+
         _baseUrl = (configuration["Gemini:ApiBaseUrl"] ?? "https://generativelanguage.googleapis.com/v1beta").TrimEnd('/');
     }
 
     private bool HasLiveApiKey => !string.IsNullOrWhiteSpace(_configuredApiKey);
 
-    private string ResolveModel(string? explicitModel) =>
-        string.IsNullOrWhiteSpace(explicitModel) ? _defaultModel : explicitModel.Trim();
+    private string ResolveModel(string? explicitModel)
+    {
+        if (string.IsNullOrWhiteSpace(explicitModel))
+        {
+            return _defaultModel;
+        }
+
+        var trimmed = explicitModel.Trim();
+        if (_allowedModels.Contains(trimmed))
+        {
+            return trimmed;
+        }
+
+        _logger.LogWarning(
+            "Requested Gemini model '{RequestedModel}' is not in the configured allowlist; falling back to default model '{DefaultModel}'.",
+            trimmed, _defaultModel);
+        return _defaultModel;
+    }
 
     public async Task<List<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default)
     {
         if (!HasLiveApiKey)
         {
-            return ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
+            return _allowedModels.ToList();
         }
 
         try
         {
-            var endpoint = $"{_baseUrl}/models?key={_configuredApiKey}";
-            using var response = await _httpClient.GetAsync(endpoint, cancellationToken);
+            var endpoint = $"{_baseUrl}/models";
+            using var requestMessage = new HttpRequestMessage(HttpMethod.Get, endpoint);
+            requestMessage.Headers.Add("x-goog-api-key", _configuredApiKey);
+
+            using var response = await _httpClient.SendAsync(requestMessage, cancellationToken);
             if (response.IsSuccessStatusCode)
             {
                 var json = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -100,7 +139,10 @@ public class GeminiPatientAgentService : IAiPatientAgentService
                         {
                             var name = nameProp.GetString() ?? string.Empty;
                             if (name.StartsWith("models/", StringComparison.Ordinal)) name = name["models/".Length..];
-                            if (!string.IsNullOrWhiteSpace(name)) models.Add(name);
+                            if (!string.IsNullOrWhiteSpace(name) && _allowedModels.Contains(name))
+                            {
+                                models.Add(name);
+                            }
                         }
                     }
 
@@ -113,7 +155,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             _logger.LogWarning(ex, "Failed to query Gemini ListModels.");
         }
 
-        return [_defaultModel, "gemini-flash-latest", "gemini-2.5-flash-lite"];
+        return _allowedModels.ToList();
     }
 
     public async Task<LivePatientSummaryResponseDto> SummarizePatientLiveAsync(
@@ -929,7 +971,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
     [
         "gemini-flash-lite-latest",
         "gemini-3-flash-preview",
-        "gemini-3.5-flash-lite",
+        "gemini-2.5-flash-lite",
         "gemini-flash-latest"
     ];
 
@@ -938,10 +980,12 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         object payload,
         CancellationToken cancellationToken)
     {
-        var candidates = new List<string> { primaryModel };
+        var safePrimaryModel = ResolveModel(primaryModel);
+        var candidates = new List<string> { safePrimaryModel };
         foreach (var candidate in FallbackCandidateModels)
         {
-            if (!candidates.Contains(candidate, StringComparer.OrdinalIgnoreCase))
+            if (_allowedModels.Contains(candidate) &&
+                !candidates.Contains(candidate, StringComparer.OrdinalIgnoreCase))
             {
                 candidates.Add(candidate);
             }
@@ -951,19 +995,25 @@ public class GeminiPatientAgentService : IAiPatientAgentService
 
         foreach (var candidateModel in candidates)
         {
-            var endpoint = $"{_baseUrl}/models/{candidateModel}:generateContent?key={_configuredApiKey}";
+            var endpoint = $"{_baseUrl}/models/{candidateModel}:generateContent";
             try
             {
-                using var response = await _httpClient.PostAsJsonAsync(endpoint, payload, cancellationToken);
+                using var requestMessage = new HttpRequestMessage(HttpMethod.Post, endpoint)
+                {
+                    Content = JsonContent.Create(payload)
+                };
+                requestMessage.Headers.Add("x-goog-api-key", _configuredApiKey);
+
+                using var response = await _httpClient.SendAsync(requestMessage, cancellationToken);
                 var body = await response.Content.ReadAsStringAsync(cancellationToken);
 
                 if (response.IsSuccessStatusCode)
                 {
-                    if (!string.Equals(candidateModel, primaryModel, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(candidateModel, safePrimaryModel, StringComparison.OrdinalIgnoreCase))
                     {
                         _logger.LogInformation(
                             "Gemini primary model {PrimaryModel} was unavailable; succeeded with fallback model {FallbackModel}.",
-                            primaryModel, candidateModel);
+                            safePrimaryModel, candidateModel);
                     }
 
                     return (body, candidateModel);

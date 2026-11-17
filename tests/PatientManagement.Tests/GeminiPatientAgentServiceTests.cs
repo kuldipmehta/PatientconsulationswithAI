@@ -686,6 +686,164 @@ public class GeminiPatientAgentServiceTests : IDisposable
         ragServiceMock.Verify(r => r.SearchPatientKnowledgeAsync(9, "asthma treatment", It.IsAny<int>(), It.IsAny<double>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [Fact]
+    public async Task ChatAsync_WithPathTraversalModel_FallsBackToDefaultAndSendsKeyInHeaderNotQueryString()
+    {
+        // Arrange
+        HttpRequestMessage? capturedRequest = null;
+        var handler = new StubHttpMessageHandler((req, _) =>
+        {
+            capturedRequest = req;
+            var okJson = JsonSerializer.Serialize(new
+            {
+                candidates = new[]
+                {
+                    new { content = new { parts = new[] { new { text = "Safe response using default model." } } } }
+                }
+            });
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(okJson, Encoding.UTF8, "application/json")
+            });
+        });
+
+        var liveConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "Gemini:ApiKey", "test-secret-api-key-999" },
+                { "Gemini:Model", "gemini-flash-latest" },
+                { "Gemini:AllowedModels:0", "gemini-flash-latest" },
+                { "Gemini:AllowedModels:1", "gemini-2.5-pro" }
+            })
+            .Build();
+
+        var liveAgent = new GeminiPatientAgentService(
+            new HttpClient(handler),
+            _dbContext,
+            liveConfig,
+            _patientServiceMock.Object,
+            _consultationServiceMock.Object,
+            _doctorServiceMock.Object,
+            _loggerMock.Object);
+
+        // Act: Attempt path traversal via model=../../files
+        var response = await liveAgent.ChatAsync(new AiChatRequestDto
+        {
+            Message = "Hello",
+            Model = "../../files"
+        });
+
+        // Assert: Replaced with default model, no traversal in URL, key sent ONLY in x-goog-api-key header
+        capturedRequest.Should().NotBeNull();
+        var url = capturedRequest!.RequestUri!.ToString();
+        url.Should().Be("https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent");
+        url.Should().NotContain("..");
+        url.Should().NotContain("files");
+        url.Should().NotContain("key=");
+        url.Should().NotContain("test-secret-api-key-999");
+
+        capturedRequest.Headers.TryGetValues("x-goog-api-key", out var keyValues).Should().BeTrue();
+        keyValues.Should().ContainSingle().Which.Should().Be("test-secret-api-key-999");
+        response.ModelUsed.Should().Be("gemini-flash-latest");
+    }
+
+    [Fact]
+    public async Task TriageAndModels_EnforceAllowlistAndUseHeaderKey()
+    {
+        // Arrange
+        var capturedRequests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler((req, _) =>
+        {
+            capturedRequests.Add(req);
+            if (req.Method == HttpMethod.Get)
+            {
+                var listJson = JsonSerializer.Serialize(new
+                {
+                    models = new[]
+                    {
+                        new { name = "models/gemini-2.5-pro", supportedGenerationMethods = new[] { "generateContent" } },
+                        new { name = "models/unlisted-experimental-model", supportedGenerationMethods = new[] { "generateContent" } }
+                    }
+                });
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(listJson, Encoding.UTF8, "application/json")
+                });
+            }
+
+            var triageJson = JsonSerializer.Serialize(new
+            {
+                candidates = new[]
+                {
+                    new
+                    {
+                        content = new
+                        {
+                            parts = new[]
+                            {
+                                new
+                                {
+                                    text = JsonSerializer.Serialize(new
+                                    {
+                                        urgencyLevel = "Low",
+                                        triageSummary = "Mild tension headache.",
+                                        possibleConditions = new[] { "Tension headache" },
+                                        recommendedNextSteps = new[] { "Hydration and rest" },
+                                        recommendedSpecialty = "General Practice"
+                                    })
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(triageJson, Encoding.UTF8, "application/json")
+            });
+        });
+
+        var liveConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "Gemini:ApiKey", "header-only-secret-key" },
+                { "Gemini:Model", "gemini-flash-latest" },
+                { "Gemini:AllowedModels:0", "gemini-flash-latest" },
+                { "Gemini:AllowedModels:1", "gemini-2.5-pro" }
+            })
+            .Build();
+
+        var liveAgent = new GeminiPatientAgentService(
+            new HttpClient(handler),
+            _dbContext,
+            liveConfig,
+            _patientServiceMock.Object,
+            _consultationServiceMock.Object,
+            _doctorServiceMock.Object,
+            _loggerMock.Object);
+
+        // Act
+        var models = await liveAgent.GetAvailableModelsAsync();
+        await liveAgent.TriageSymptomsAsync(new AiTriageRequestDto { Symptoms = "mild headache" }, explicitModel: "../../files");
+        await liveAgent.TriageSymptomsAsync(new AiTriageRequestDto { Symptoms = "mild headache" }, explicitModel: "gemini-2.5-pro");
+
+        // Assert
+        models.Should().Contain("gemini-2.5-pro");
+        models.Should().NotContain("unlisted-experimental-model");
+
+        capturedRequests.Should().HaveCount(3);
+        foreach (var req in capturedRequests)
+        {
+            req.RequestUri!.ToString().Should().NotContain("key=");
+            req.Headers.GetValues("x-goog-api-key").Should().ContainSingle().Which.Should().Be("header-only-secret-key");
+        }
+
+        // First triage with ../../files fell back to default gemini-flash-latest
+        capturedRequests[1].RequestUri!.ToString().Should().EndWith("/models/gemini-flash-latest:generateContent");
+        // Second triage with allowlisted gemini-2.5-pro used gemini-2.5-pro
+        capturedRequests[2].RequestUri!.ToString().Should().EndWith("/models/gemini-2.5-pro:generateContent");
+    }
+
     public void Dispose()
     {
         _dbContext.Database.EnsureDeleted();
