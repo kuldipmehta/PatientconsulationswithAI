@@ -1,10 +1,12 @@
 using System.Reflection;
+using System.Security.Claims;
 using System.Text;
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using FluentValidation;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -68,28 +70,55 @@ builder.Services.AddCors(options =>
     });
 });
 
-// 4. Rate Limiting (Global + Auth + AI Policies)
+// 4. Reverse Proxy Forwarded Headers (Azure App Service / Load Balancers) & Partitioned Rate Limiting
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.KnownIPNetworks.Clear();
+    options.KnownProxies.Clear();
+    options.ForwardLimit = 2;
+});
+
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 
-    options.AddFixedWindowLimiter("auth", opt =>
-    {
-        opt.Window = TimeSpan.FromMinutes(1);
-        opt.PermitLimit = 20;
-        opt.QueueLimit = 0;
-    });
+    // Partitioned per client IP so one bad actor cannot lock out other users
+    options.AddPolicy("auth", ctx => RateLimitPartition.GetFixedWindowLimiter(
+        partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "anon",
+        factory: _ => new FixedWindowRateLimiterOptions
+        {
+            AutoReplenishment = true,
+            PermitLimit = 10,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0
+        }));
 
-    options.AddFixedWindowLimiter("ai", opt =>
+    // Partitioned per authenticated user (falls back to IP if unauthenticated)
+    options.AddPolicy("ai", ctx =>
     {
-        opt.Window = TimeSpan.FromMinutes(1);
-        opt.PermitLimit = 30;
-        opt.QueueLimit = 2;
+        var userKey = ctx.User.FindFirstValue(ClaimTypes.NameIdentifier)
+            ?? ctx.User.Identity?.Name
+            ?? ctx.Connection.RemoteIpAddress?.ToString()
+            ?? "anon";
+
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: userKey,
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                AutoReplenishment = true,
+                PermitLimit = 30,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            });
     });
 
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
         RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: httpContext.User.Identity?.Name ?? httpContext.Connection.RemoteIpAddress?.ToString() ?? "anonymous",
+            partitionKey: httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier)
+                ?? httpContext.User.Identity?.Name
+                ?? httpContext.Connection.RemoteIpAddress?.ToString()
+                ?? "anonymous",
             factory: _ => new FixedWindowRateLimiterOptions
             {
                 AutoReplenishment = true,
@@ -202,6 +231,7 @@ if (!app.Environment.IsDevelopment() &&
     throw new InvalidOperationException("Jwt:SigningKey must be configured.");
 }
 
+app.UseForwardedHeaders();
 app.UseSerilogRequestLogging();
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 
@@ -225,8 +255,8 @@ if (!app.Environment.IsDevelopment())
     app.UseHttpsRedirection();
 }
 
-app.UseRateLimiter();
 app.UseAuthentication();
+app.UseRateLimiter();
 app.UseAuthorization();
 
 app.MapControllers();
