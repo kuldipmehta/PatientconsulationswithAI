@@ -55,8 +55,16 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
             using var scope = sp.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var logger = scope.ServiceProvider.GetRequiredService<ILogger<CustomWebApplicationFactory>>();
+            var seedConfig = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Seed:AdminPassword"] = "Admin@12345",
+                    ["Seed:DoctorPassword"] = "Doctor@12345",
+                    ["Seed:ReceptionistPassword"] = "Reception@12345"
+                })
+                .Build();
             db.Database.EnsureCreated();
-            DbInitializer.SeedAsync(db, logger).GetAwaiter().GetResult();
+            DbInitializer.SeedAsync(db, logger, isDevelopment: true, seedConfig).GetAwaiter().GetResult();
         });
     }
 }

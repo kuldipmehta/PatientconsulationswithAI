@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using PatientManagement.Core.Entities;
 using PatientManagement.Core.Enums;
@@ -8,8 +9,18 @@ namespace PatientManagement.Infrastructure.Data;
 
 public static class DbInitializer
 {
-    public static async Task SeedAsync(ApplicationDbContext context, ILogger logger)
+    public static async Task SeedAsync(
+        ApplicationDbContext context,
+        ILogger logger,
+        bool isDevelopment,
+        IConfiguration configuration)
     {
+        if (!isDevelopment)
+        {
+            logger.LogInformation("Skipping demo database seeding outside Development environment.");
+            return;
+        }
+
         try
         {
             if (!await context.Doctors.AnyAsync())
@@ -32,16 +43,69 @@ public static class DbInitializer
 
             if (!await context.AppUsers.AnyAsync())
             {
-                var users = new List<AppUser>
-                {
-                    new() { Email = "admin@patientportal.com", FullName = "System Administrator", Role = UserRole.Admin, PasswordHash = PasswordHasher.Hash("Admin@12345"), IsActive = true },
-                    new() { Email = "sarah.jenkins@patientportal.com", FullName = "Dr. Sarah Jenkins, MD", Role = UserRole.Doctor, DoctorId = sarahId, PasswordHash = PasswordHasher.Hash("Doctor@12345"), IsActive = true },
-                    new() { Email = "robert.sterling@patientportal.com", FullName = "Dr. Robert Sterling", Role = UserRole.Doctor, DoctorId = robertId, PasswordHash = PasswordHasher.Hash("Doctor@12345"), IsActive = true },
-                    new() { Email = "reception@patientportal.com", FullName = "Front Desk Reception", Role = UserRole.Receptionist, PasswordHash = PasswordHasher.Hash("Reception@12345"), IsActive = true }
-                };
+                var adminPassword = configuration["Seed:AdminPassword"];
+                var doctorPassword = configuration["Seed:DoctorPassword"];
+                var receptionistPassword = configuration["Seed:ReceptionistPassword"];
 
-                await context.AppUsers.AddRangeAsync(users);
-                await context.SaveChangesAsync();
+                var users = new List<AppUser>();
+
+                if (!string.IsNullOrWhiteSpace(adminPassword))
+                {
+                    users.Add(new AppUser
+                    {
+                        Email = "admin@patientportal.com",
+                        FullName = "System Administrator",
+                        Role = UserRole.Admin,
+                        PasswordHash = PasswordHasher.Hash(adminPassword),
+                        IsActive = true
+                    });
+                }
+
+                if (!string.IsNullOrWhiteSpace(doctorPassword))
+                {
+                    users.Add(new AppUser
+                    {
+                        Email = "sarah.jenkins@patientportal.com",
+                        FullName = "Dr. Sarah Jenkins, MD",
+                        Role = UserRole.Doctor,
+                        DoctorId = sarahId,
+                        PasswordHash = PasswordHasher.Hash(doctorPassword),
+                        IsActive = true
+                    });
+                    users.Add(new AppUser
+                    {
+                        Email = "robert.sterling@patientportal.com",
+                        FullName = "Dr. Robert Sterling",
+                        Role = UserRole.Doctor,
+                        DoctorId = robertId,
+                        PasswordHash = PasswordHasher.Hash(doctorPassword),
+                        IsActive = true
+                    });
+                }
+
+                if (!string.IsNullOrWhiteSpace(receptionistPassword))
+                {
+                    users.Add(new AppUser
+                    {
+                        Email = "reception@patientportal.com",
+                        FullName = "Front Desk Reception",
+                        Role = UserRole.Receptionist,
+                        PasswordHash = PasswordHasher.Hash(receptionistPassword),
+                        IsActive = true
+                    });
+                }
+
+                if (users.Count > 0)
+                {
+                    await context.AppUsers.AddRangeAsync(users);
+                    await context.SaveChangesAsync();
+                    logger.LogInformation("Seeded {UserCount} Development demo users from user-secrets/configuration.", users.Count);
+                }
+                else
+                {
+                    logger.LogWarning(
+                        "No demo users were seeded in Development because Seed:AdminPassword, Seed:DoctorPassword, and Seed:ReceptionistPassword are not configured in user-secrets.");
+                }
             }
 
             if (await context.Patients.IgnoreQueryFilters().AnyAsync())

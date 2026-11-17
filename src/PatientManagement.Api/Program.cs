@@ -250,9 +250,11 @@ app.MapHealthChecks("/health", new HealthCheckOptions
 
 app.MapHealthChecks("/health/ready").AllowAnonymous();
 
-// Apply migrations & seed ONLY in Development (or when explicitly enabled) — Production runs migrations separately
-var autoMigrate = app.Environment.IsDevelopment() || builder.Configuration.GetValue<bool>("Database:AutoMigrateOnStartup");
-if (autoMigrate && !string.Equals(app.Environment.EnvironmentName, "Testing", StringComparison.OrdinalIgnoreCase))
+// Apply migrations in Development or when Database:AutoMigrateOnStartup is explicitly enabled.
+// Demo database seeding runs STRICTLY in Development — AutoMigrateOnStartup never enables seeding outside Development.
+var isTesting = string.Equals(app.Environment.EnvironmentName, "Testing", StringComparison.OrdinalIgnoreCase);
+var autoMigrate = app.Environment.IsDevelopment() || app.Configuration.GetValue<bool>("Database:AutoMigrateOnStartup");
+if (autoMigrate && !isTesting)
 {
     using var scope = app.Services.CreateScope();
     var services = scope.ServiceProvider;
@@ -261,9 +263,16 @@ if (autoMigrate && !string.Equals(app.Environment.EnvironmentName, "Testing", St
 
     try
     {
-        logger.LogInformation("Applying SQL Server database migrations (Development/AutoMigrate)...");
-        await dbContext.Database.MigrateAsync();
-        await DbInitializer.SeedAsync(dbContext, logger);
+        if (dbContext.Database.IsRelational())
+        {
+            logger.LogInformation("Applying SQL Server database migrations...");
+            await dbContext.Database.MigrateAsync();
+        }
+
+        if (app.Environment.IsDevelopment())
+        {
+            await DbInitializer.SeedAsync(dbContext, logger, isDevelopment: true, app.Configuration);
+        }
     }
     catch (Exception ex)
     {
