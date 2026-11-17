@@ -11,8 +11,8 @@ namespace PatientManagement.Infrastructure.Services.Ai;
 public class GeminiTextEmbeddingService : ITextEmbeddingService
 {
     private const string DefaultBaseUrl = "https://generativelanguage.googleapis.com/v1beta";
-    private const string EmbeddingModel = "models/text-embedding-004";
-    private const int Dimensions = 768;
+    private const string EmbeddingModel = "models/gemini-embedding-001";
+    private const int Dimensions = 3072;
 
     private readonly HttpClient _httpClient;
     private readonly ILogger<GeminiTextEmbeddingService> _logger;
@@ -27,7 +27,7 @@ public class GeminiTextEmbeddingService : ITextEmbeddingService
         _httpClient = httpClient;
         _logger = logger;
         _configuredApiKey = configuration["Gemini:ApiKey"] ?? Environment.GetEnvironmentVariable("GEMINI_API_KEY");
-        _baseUrl = configuration["Gemini:BaseUrl"] ?? DefaultBaseUrl;
+        _baseUrl = (configuration["Gemini:ApiBaseUrl"] ?? configuration["Gemini:BaseUrl"] ?? DefaultBaseUrl).TrimEnd('/');
     }
 
     private bool HasLiveApiKey =>

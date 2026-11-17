@@ -24,7 +24,7 @@ public interface IPatientRagService
         int patientId,
         string query,
         int topK = 5,
-        double minScore = 0.35,
+        double minScore = 0.15,
         CancellationToken cancellationToken = default);
 
     Task IndexConsultationAsync(

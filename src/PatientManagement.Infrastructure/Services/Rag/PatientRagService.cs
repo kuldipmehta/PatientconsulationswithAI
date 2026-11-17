@@ -16,6 +16,16 @@ public class PatientRagService : IPatientRagService
     private const long MaxFileSize = 10 * 1024 * 1024; // 10 MB
     private static readonly byte[] PdfMagicBytes = "%PDF-"u8.ToArray();
 
+    private static readonly HashSet<string> StopWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+        "in", "on", "at", "to", "for", "with", "from", "by", "about", "of",
+        "and", "or", "what", "which", "who", "whom", "this", "that", "these",
+        "those", "does", "did", "have", "has", "had", "can", "could", "should",
+        "would", "any", "some", "tell", "show", "give", "me", "it", "its",
+        "their", "his", "her", "my", "our", "you", "your"
+    };
+
     private readonly ApplicationDbContext _dbContext;
     private readonly IBlobStorageService _blobStorageService;
     private readonly ITextEmbeddingService _embeddingService;
@@ -210,7 +220,7 @@ public class PatientRagService : IPatientRagService
         int patientId,
         string query,
         int topK = 5,
-        double minScore = 0.35,
+        double minScore = 0.15,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(query))
@@ -227,15 +237,67 @@ public class PatientRagService : IPatientRagService
             .Where(c => c.PatientId == patientId)
             .ToListAsync(cancellationToken);
 
+        var queryWords = query.ToLowerInvariant()
+            .Split(new[] { ' ', '\r', '\n', '\t', '.', ',', ';', ':', '(', ')', '[', ']', '-', '/', '\\', '?', '!', '"', '\'' },
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(w => w.Length >= 2 && !StopWords.Contains(w))
+            .Distinct()
+            .ToList();
+
         var scored = new List<(PatientDocumentChunk Chunk, double Score)>();
 
         foreach (var c in chunks)
         {
             var vec = VectorOperations.DeserializeVector(c.EmbeddingVectorJson);
-            var score = VectorOperations.CosineSimilarity(queryEmbedding, vec);
-            if (score >= minScore)
+            double vectorScore = 0.0;
+
+            if (vec.Length > 0 && queryEmbedding.Length > 0)
             {
-                scored.Add((c, score));
+                if (vec.Length == queryEmbedding.Length)
+                {
+                    vectorScore = VectorOperations.CosineSimilarity(queryEmbedding, vec);
+                }
+                else
+                {
+                    // Fallback across differing dimension sets (e.g. 768 vs 3072)
+                    var fallbackQueryVec = VectorOperations.GenerateDeterministicPseudoEmbedding(query, vec.Length);
+                    vectorScore = VectorOperations.CosineSimilarity(fallbackQueryVec, vec);
+                }
+            }
+
+            int matchedKeywords = 0;
+            if (queryWords.Count > 0)
+            {
+                foreach (var word in queryWords)
+                {
+                    if (c.TextContent.Contains(word, StringComparison.OrdinalIgnoreCase))
+                    {
+                        matchedKeywords++;
+                    }
+                }
+            }
+
+            double keywordRatio = queryWords.Count > 0 ? (double)matchedKeywords / queryWords.Count : 0.0;
+
+            double finalScore;
+            if (matchedKeywords > 0)
+            {
+                // Significant clinical keyword boost for specific lab tests (e.g. SGPT, ALT), medications, or symptom terms
+                var keywordBoost = 0.35 + (keywordRatio * 0.55);
+                finalScore = Math.Max(vectorScore, keywordBoost);
+                if (vectorScore > 0)
+                {
+                    finalScore = Math.Max(finalScore, (vectorScore * 0.4) + (keywordBoost * 0.6));
+                }
+            }
+            else
+            {
+                finalScore = vectorScore;
+            }
+
+            if (finalScore >= minScore)
+            {
+                scored.Add((c, finalScore));
             }
         }
 
@@ -346,6 +408,30 @@ public class PatientRagService : IPatientRagService
         {
             await IndexConsultationAsync(c.Id, cancellationToken);
             indexedCount++;
+        }
+
+        // Also re-embed any existing uploaded document chunks for this patient using current embedding model
+        var documentChunks = await _dbContext.PatientDocumentChunks
+            .Where(c => c.PatientId == patientId && c.PatientDocumentId != null)
+            .ToListAsync(cancellationToken);
+
+        if (documentChunks.Count > 0)
+        {
+            var chunkTexts = documentChunks.Select(c => c.TextContent).ToList();
+            var embeddings = await _embeddingService.GenerateBatchEmbeddingsAsync(chunkTexts, cancellationToken);
+
+            for (int i = 0; i < documentChunks.Count; i++)
+            {
+                if (i < embeddings.Count)
+                {
+                    var emb = embeddings[i];
+                    documentChunks[i].EmbeddingVectorJson = VectorOperations.SerializeVector(emb);
+                    documentChunks[i].EmbeddingDimensions = emb.Length;
+                }
+            }
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            _logger.LogInformation("Re-embedded {Count} document chunks for patient #{PatientId}.", documentChunks.Count, patientId);
         }
 
         return indexedCount;

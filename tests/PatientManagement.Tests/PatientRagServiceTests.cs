@@ -220,6 +220,111 @@ public class PatientRagServiceTests : IDisposable
         results[0].SimilarityScore.Should().BeGreaterThan(0.25);
     }
 
+    [Fact]
+    public async Task SearchPatientKnowledgeAsync_WithLabReportKeywordMatch_RetrievesDocumentChunkEvenWithDimensionMismatch()
+    {
+        // Arrange
+        var patient = new Patient { Id = 10, FirstName = "Kuldip", LastName = "Mehta", Email = "kuldip@example.com", PrimaryDoctorId = 1 };
+        _dbContext.Patients.Add(patient);
+
+        var doc = new PatientDocument
+        {
+            Id = 55,
+            PatientId = 10,
+            FileName = "SGPT_Liver_Report.pdf",
+            ContentType = "application/pdf",
+            FileSizeBytes = 12040,
+            DocumentType = "Lab Report",
+            Status = "Indexed",
+            TotalChunks = 1,
+            CreatedAtUtc = DateTime.UtcNow
+        };
+        _dbContext.PatientDocuments.Add(doc);
+
+        var pseudoEmb768 = VectorOperations.GenerateDeterministicPseudoEmbedding("SGPT ALT Liver Panel 68 U/L", 768);
+        var chunk = new PatientDocumentChunk
+        {
+            PatientDocumentId = 55,
+            PatientId = 10,
+            ChunkIndex = 1,
+            SourceType = "PatientDocument",
+            SourceLabel = "SGPT_Liver_Report.pdf (Section 1/1)",
+            TextContent = "Serum Glutamic Pyruvic Transaminase (SGPT / ALT) level: 68 U/L (Elevated. Normal range: 7-56 U/L). Mild transaminitis.",
+            EmbeddingVectorJson = VectorOperations.SerializeVector(pseudoEmb768),
+            EmbeddingDimensions = 768,
+            CreatedAtUtc = DateTime.UtcNow
+        };
+        _dbContext.PatientDocumentChunks.Add(chunk);
+        await _dbContext.SaveChangesAsync();
+
+        var sut = new PatientRagService(
+            _dbContext,
+            _blobStorageMock.Object,
+            _embeddingService,
+            _currentUserMock.Object,
+            _loggerMock.Object);
+
+        // Act - Query specifically asks for SGPT value
+        var results = await sut.SearchPatientKnowledgeAsync(10, "What is the SGPT value for the patient?", topK: 3, minScore: 0.15);
+
+        // Assert
+        results.Should().NotBeEmpty();
+        results[0].SourceType.Should().Be("PatientDocument");
+        results[0].TextContent.Should().Contain("SGPT / ALT");
+        results[0].TextContent.Should().Contain("68 U/L");
+        results[0].SimilarityScore.Should().BeGreaterThan(0.40);
+    }
+
+    [Fact]
+    public async Task ReindexPatientConsultationsAsync_ReIndexesBothConsultationsAndDocumentChunks()
+    {
+        // Arrange
+        var patient = new Patient { Id = 11, FirstName = "Reindex", LastName = "Test", Email = "reindex@example.com", PrimaryDoctorId = 1 };
+        _dbContext.Patients.Add(patient);
+
+        var consultation = new Consultation
+        {
+            Id = 901,
+            PatientId = 11,
+            DoctorName = "Dr. Adams",
+            ConsultationDate = DateTime.UtcNow.AddDays(-2),
+            Diagnosis = "Hypertension check",
+            Status = ConsultationStatus.Completed
+        };
+        _dbContext.Consultations.Add(consultation);
+
+        var docChunk = new PatientDocumentChunk
+        {
+            PatientDocumentId = 60,
+            PatientId = 11,
+            ChunkIndex = 1,
+            SourceType = "PatientDocument",
+            SourceLabel = "Blood_Test.pdf (Section 1/1)",
+            TextContent = "Fasting blood sugar: 95 mg/dL. Normal.",
+            EmbeddingVectorJson = "[]",
+            EmbeddingDimensions = 0,
+            CreatedAtUtc = DateTime.UtcNow
+        };
+        _dbContext.PatientDocumentChunks.Add(docChunk);
+        await _dbContext.SaveChangesAsync();
+
+        var sut = new PatientRagService(
+            _dbContext,
+            _blobStorageMock.Object,
+            _embeddingService,
+            _currentUserMock.Object,
+            _loggerMock.Object);
+
+        // Act
+        var count = await sut.ReindexPatientConsultationsAsync(11);
+
+        // Assert
+        count.Should().Be(1);
+        var updatedChunk = await _dbContext.PatientDocumentChunks.FirstAsync(c => c.PatientDocumentId == 60);
+        updatedChunk.EmbeddingDimensions.Should().BeGreaterThan(0);
+        updatedChunk.EmbeddingVectorJson.Should().NotBe("[]");
+    }
+
     public void Dispose()
     {
         _dbContext.Database.EnsureDeleted();

@@ -1,4 +1,5 @@
 using PatientManagement.Core.DTOs.Consultations;
+using PatientManagement.Core.DTOs.Rag;
 
 namespace PatientManagement.Core.DTOs.Patients;
 
@@ -23,4 +24,5 @@ public class PatientResponseDto
     public DateTime? UpdatedAtUtc { get; set; }
     public int ConsultationCount => Consultations.Count;
     public List<ConsultationResponseDto> Consultations { get; set; } = new();
+    public List<PatientDocumentResponseDto> Documents { get; set; } = new();
 }

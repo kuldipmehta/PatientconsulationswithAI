@@ -26,7 +26,7 @@ public class SemanticSearchRequestDto
 {
     public string Query { get; set; } = string.Empty;
     public int TopK { get; set; } = 5;
-    public double MinScore { get; set; } = 0.35;
+    public double MinScore { get; set; } = 0.15;
 }
 
 public class RagSearchResultDto

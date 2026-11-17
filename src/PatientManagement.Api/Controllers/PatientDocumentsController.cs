@@ -75,7 +75,7 @@ public class PatientDocumentsController : ControllerBase
             patientId,
             request.Query,
             request.TopK > 0 ? request.TopK : 5,
-            request.MinScore,
+            request.MinScore > 0 ? request.MinScore : 0.15,
             cancellationToken);
 
         return Ok(ApiResponse<List<RagSearchResultDto>>.Ok(results, $"Retrieved {results.Count} semantically relevant record chunks."));

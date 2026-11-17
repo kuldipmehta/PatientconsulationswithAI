@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using PatientManagement.Core.DTOs.Common;
 using PatientManagement.Core.DTOs.Consultations;
 using PatientManagement.Core.DTOs.Patients;
+using PatientManagement.Core.DTOs.Rag;
 using PatientManagement.Core.Entities;
 using PatientManagement.Core.Enums;
 using PatientManagement.Core.Exceptions;
@@ -138,6 +139,7 @@ public class PatientService : IPatientService
             .AsNoTracking()
             .Include(p => p.PrimaryDoctor)
             .Include(p => p.Consultations)
+            .Include(p => p.Documents)
             .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
 
         if (patient == null)
@@ -403,7 +405,21 @@ public class PatientService : IPatientService
                 RowVersion = c.RowVersion.Length > 0 ? Convert.ToBase64String(c.RowVersion) : string.Empty,
                 CreatedAtUtc = c.CreatedAtUtc,
                 UpdatedAtUtc = c.UpdatedAtUtc
-            }).OrderByDescending(c => c.ConsultationDate).ToList()
+            }).OrderByDescending(c => c.ConsultationDate).ToList(),
+            Documents = patient.Documents?.Select(d => new PatientDocumentResponseDto
+            {
+                Id = d.Id,
+                PatientId = d.PatientId,
+                ConsultationId = d.ConsultationId,
+                FileName = d.FileName,
+                ContentType = d.ContentType,
+                FileSizeBytes = d.FileSizeBytes,
+                DocumentType = d.DocumentType,
+                Status = d.Status,
+                TotalChunks = d.TotalChunks,
+                Summary = d.Summary,
+                CreatedAtUtc = d.CreatedAtUtc
+            }).OrderByDescending(d => d.CreatedAtUtc).ToList() ?? new()
         };
     }
 }

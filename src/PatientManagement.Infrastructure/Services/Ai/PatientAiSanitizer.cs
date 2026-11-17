@@ -1,5 +1,6 @@
 using PatientManagement.Core.DTOs.Ai;
 using PatientManagement.Core.DTOs.Patients;
+using PatientManagement.Core.Entities;
 
 namespace PatientManagement.Infrastructure.Services.Ai;
 
@@ -21,7 +22,9 @@ public static class PatientAiSanitizer
         return $"<untrusted_clinical_text>\n{neutralized}\n</untrusted_clinical_text>";
     }
 
-    public static object BuildMinimizedClinicalPayload(PatientResponseDto patient)
+    public static object BuildMinimizedClinicalPayload(
+        PatientResponseDto patient,
+        IEnumerable<PatientDocumentChunk>? documentChunks = null)
     {
         // Strictly omit PII: FirstName, LastName, Email, PhoneNumber, Address, DateOfBirth
         return new
@@ -41,13 +44,33 @@ public static class PatientAiSanitizer
                 Notes = WrapUntrustedText(c.Notes),
                 TreatmentPlan = WrapUntrustedText(c.TreatmentPlan),
                 Prescription = WrapUntrustedText(c.Prescription)
-            }).ToList()
+            }).ToList(),
+            UploadedLabAndClinicalDocuments = documentChunks != null
+                ? documentChunks.Select(dc => new
+                {
+                    DocumentOrChunkId = dc.Id,
+                    DocumentType = dc.SourceType,
+                    Label = dc.SourceLabel,
+                    Content = WrapUntrustedText(dc.TextContent),
+                    DateUtc = dc.CreatedAtUtc.ToString("yyyy-MM-dd")
+                }).ToList()
+                : (object)patient.Documents.Select(d => new
+                {
+                    DocumentId = d.Id,
+                    DocumentName = d.FileName,
+                    d.DocumentType,
+                    TotalChunks = d.TotalChunks,
+                    Summary = d.Summary,
+                    DateUtc = d.CreatedAtUtc.ToString("yyyy-MM-dd")
+                }).ToList()
         };
     }
 
-    public static List<AiSourceCitationDto> ExtractCitations(PatientResponseDto patient)
+    public static List<AiSourceCitationDto> ExtractCitations(
+        PatientResponseDto patient,
+        IEnumerable<PatientDocumentChunk>? documentChunks = null)
     {
-        return patient.Consultations
+        var list = patient.Consultations
             .OrderByDescending(c => c.ConsultationDate)
             .Select(c => new AiSourceCitationDto
             {
@@ -55,8 +78,44 @@ public static class PatientAiSanitizer
                 ConsultationDate = c.ConsultationDate,
                 DoctorName = c.DoctorName,
                 ClinicalSnippet = $"{c.Diagnosis}" +
-                    (string.IsNullOrWhiteSpace(c.Prescription) ? string.Empty : $" (Rx: {c.Prescription})")
+                    (string.IsNullOrWhiteSpace(c.Prescription) ? string.Empty : $" (Rx: {c.Prescription})"),
+                SourceType = "Consultation"
             })
             .ToList();
+
+        if (documentChunks != null)
+        {
+            foreach (var chunk in documentChunks)
+            {
+                list.Add(new AiSourceCitationDto
+                {
+                    ConsultationId = chunk.ConsultationId ?? 0,
+                    ConsultationDate = chunk.CreatedAtUtc,
+                    DoctorName = chunk.SourceLabel,
+                    ClinicalSnippet = chunk.TextContent.Length > 160 ? chunk.TextContent[..160] + "..." : chunk.TextContent,
+                    SourceType = chunk.SourceType,
+                    DocumentId = chunk.PatientDocumentId,
+                    DocumentName = chunk.SourceLabel
+                });
+            }
+        }
+        else if (patient.Documents.Count > 0)
+        {
+            foreach (var doc in patient.Documents)
+            {
+                list.Add(new AiSourceCitationDto
+                {
+                    ConsultationId = doc.ConsultationId ?? 0,
+                    ConsultationDate = doc.CreatedAtUtc,
+                    DoctorName = "Uploaded Clinical Document",
+                    ClinicalSnippet = $"{doc.FileName} ({doc.DocumentType}, {doc.TotalChunks} chunks)",
+                    SourceType = "PatientDocument",
+                    DocumentId = doc.Id,
+                    DocumentName = doc.FileName
+                });
+            }
+        }
+
+        return list;
     }
 }
