@@ -41,6 +41,8 @@ jobs:
         run: dotnet publish src/PatientManagement.Api/PatientManagement.Api.csproj --no-restore --configuration Release --output ./publish
 
       - name: Generate idempotent SQL migration script (separate deployment step)
+        env:
+          ASPNETCORE_ENVIRONMENT: Development
         run: |
           dotnet tool install --global dotnet-ef --version 10.* || dotnet tool update --global dotnet-ef --version 10.*
           echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
@@ -100,6 +102,15 @@ jobs:
         with:
           name: api-publish-artifact
           path: ./publish
+
+      - name: Apply idempotent SQL migrations to Azure SQL Database
+        uses: azure/sql-action@v2.3
+        with:
+          connection-string: ${{ secrets.AZURE_SQL_CONNECTION_STRING }}
+          path: ./publish/migrations.sql
+
+      - name: Remove migration script from web deployment package
+        run: rm -f ./publish/migrations.sql
 
       - name: Deploy API to Azure Web App
         uses: azure/webapps-deploy@v3

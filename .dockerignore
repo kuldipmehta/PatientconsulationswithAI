@@ -4,6 +4,9 @@
 **/bin
 **/obj
 **/LocalStorage
+**/node_modules
+**/dist
+**/appsettings.Development.json
 **/*.user
 **/*.suo
 README.md
