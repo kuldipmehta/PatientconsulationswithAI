@@ -38,6 +38,13 @@ public class PatientsController : ControllerBase
             return NotFound(ApiResponse<object>.Fail($"Patient with ID {id} was not found."));
         }
 
+        if (User.IsInRole("Receptionist"))
+        {
+            return Ok(ApiResponse<ReceptionistPatientResponseDto>.Ok(
+                ReceptionistPatientResponseDto.FromFull(patient),
+                "Patient retrieved successfully"));
+        }
+
         return Ok(ApiResponse<PatientResponseDto>.Ok(patient, "Patient retrieved successfully"));
     }
 
@@ -62,6 +69,16 @@ public class PatientsController : ControllerBase
     {
         var createdPatient = await _patientService.CreatePatientAsync(dto, cancellationToken);
 
+        if (User.IsInRole("Receptionist"))
+        {
+            return CreatedAtAction(
+                nameof(GetById),
+                new { id = createdPatient.Id },
+                ApiResponse<ReceptionistPatientResponseDto>.Ok(
+                    ReceptionistPatientResponseDto.FromFull(createdPatient),
+                    "Patient registered securely, picture stored privately, and onboarding notification logged."));
+        }
+
         return CreatedAtAction(
             nameof(GetById),
             new { id = createdPatient.Id },
@@ -81,6 +98,13 @@ public class PatientsController : ControllerBase
         if (updatedPatient == null)
         {
             return NotFound(ApiResponse<object>.Fail($"Patient with ID {id} was not found."));
+        }
+
+        if (User.IsInRole("Receptionist"))
+        {
+            return Ok(ApiResponse<ReceptionistPatientResponseDto>.Ok(
+                ReceptionistPatientResponseDto.FromFull(updatedPatient),
+                "Patient updated successfully"));
         }
 
         return Ok(ApiResponse<PatientResponseDto>.Ok(updatedPatient, "Patient updated successfully"));

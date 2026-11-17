@@ -176,6 +176,8 @@ public class PatientService : IPatientService
         }
 
         int? assignedDoctorId = currentDoctorId ?? dto.PrimaryDoctorId;
+        var canSetMedicalNotes = _currentUser is not { IsAuthenticated: true }
+            || _currentUser.Role is UserRole.Doctor or UserRole.Admin;
 
         var patient = new Patient
         {
@@ -187,7 +189,7 @@ public class PatientService : IPatientService
             Gender = dto.Gender.Trim(),
             DateOfBirth = dto.DateOfBirth,
             Address = dto.Address?.Trim(),
-            MedicalNotes = dto.MedicalNotes?.Trim(),
+            MedicalNotes = canSetMedicalNotes ? dto.MedicalNotes?.Trim() : null,
             ProfilePictureUrl = pictureUrl,
             ProfilePictureBlobName = pictureBlobName,
             PrimaryDoctorId = assignedDoctorId,
@@ -276,7 +278,14 @@ public class PatientService : IPatientService
         patient.Gender = dto.Gender.Trim();
         patient.DateOfBirth = dto.DateOfBirth;
         patient.Address = dto.Address?.Trim();
-        patient.MedicalNotes = dto.MedicalNotes?.Trim();
+
+        // Only Doctor or Admin may modify MedicalNotes, and only when the field was actually sent
+        var canModifyMedicalNotes = _currentUser is not { IsAuthenticated: true }
+            || _currentUser.Role is UserRole.Doctor or UserRole.Admin;
+        if (canModifyMedicalNotes && dto.MedicalNotes is not null)
+        {
+            patient.MedicalNotes = dto.MedicalNotes.Trim();
+        }
 
         if (dto.PrimaryDoctorId.HasValue && _currentUser?.Role != UserRole.Doctor)
         {

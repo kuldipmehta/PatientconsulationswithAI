@@ -24,6 +24,13 @@ public class ConsultationsController : ControllerBase
     public async Task<IActionResult> GetAll([FromQuery] int? patientId, CancellationToken cancellationToken)
     {
         var result = await _consultationService.GetConsultationsAsync(patientId, cancellationToken);
+        if (User.IsInRole("Receptionist"))
+        {
+            return Ok(ApiResponse<IEnumerable<ReceptionistConsultationResponseDto>>.Ok(
+                result.Select(ReceptionistConsultationResponseDto.FromFull),
+                "Consultations retrieved successfully"));
+        }
+
         return Ok(ApiResponse<IEnumerable<ConsultationResponseDto>>.Ok(result, "Consultations retrieved successfully"));
     }
 
@@ -38,6 +45,13 @@ public class ConsultationsController : ControllerBase
             return NotFound(ApiResponse<object>.Fail($"Consultation with ID {id} was not found."));
         }
 
+        if (User.IsInRole("Receptionist"))
+        {
+            return Ok(ApiResponse<ReceptionistConsultationResponseDto>.Ok(
+                ReceptionistConsultationResponseDto.FromFull(consultation),
+                "Consultation retrieved successfully"));
+        }
+
         return Ok(ApiResponse<ConsultationResponseDto>.Ok(consultation, "Consultation retrieved successfully"));
     }
 
@@ -49,6 +63,16 @@ public class ConsultationsController : ControllerBase
     public async Task<IActionResult> Create([FromBody] CreateConsultationDto dto, CancellationToken cancellationToken)
     {
         var created = await _consultationService.CreateConsultationAsync(dto, cancellationToken);
+        if (User.IsInRole("Receptionist"))
+        {
+            return CreatedAtAction(
+                nameof(GetById),
+                new { id = created.Id },
+                ApiResponse<ReceptionistConsultationResponseDto>.Ok(
+                    ReceptionistConsultationResponseDto.FromFull(created),
+                    "Consultation scheduled successfully"));
+        }
+
         return CreatedAtAction(
             nameof(GetById),
             new { id = created.Id },
@@ -66,6 +90,13 @@ public class ConsultationsController : ControllerBase
         if (updated == null)
         {
             return NotFound(ApiResponse<object>.Fail($"Consultation with ID {id} was not found."));
+        }
+
+        if (User.IsInRole("Receptionist"))
+        {
+            return Ok(ApiResponse<ReceptionistConsultationResponseDto>.Ok(
+                ReceptionistConsultationResponseDto.FromFull(updated),
+                "Consultation updated successfully"));
         }
 
         return Ok(ApiResponse<ConsultationResponseDto>.Ok(updated, "Consultation updated successfully"));
