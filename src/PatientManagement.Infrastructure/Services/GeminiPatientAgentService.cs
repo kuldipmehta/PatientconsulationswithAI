@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -50,6 +51,13 @@ public class GeminiPatientAgentService : IAiPatientAgentService
     {
         PropertyNameCaseInsensitive = true,
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
+    private static readonly JsonSerializerOptions StrictStructuredJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        Converters = { new JsonStringEnumConverter(namingPolicy: null, allowIntegerValues: false) }
     };
 
     public GeminiPatientAgentService(
@@ -197,31 +205,21 @@ public class GeminiPatientAgentService : IAiPatientAgentService
                 summary = new { type = "STRING" },
                 identifiedRisks = new { type = "ARRAY", items = new { type = "STRING" } },
                 recommendedActions = new { type = "ARRAY", items = new { type = "STRING" } },
-                urgencyAssessment = new { type = "STRING" }
+                urgencyAssessment = new { type = "STRING", @enum = Enum.GetNames<ClinicalUrgencyLevel>() }
             },
             required = new[] { "summary", "identifiedRisks", "recommendedActions", "urgencyAssessment" }
         };
 
-        var payload = new
-        {
-            systemInstruction = new
-            {
-                parts = new[] { new { text = ClinicalSystemInstruction } }
-            },
-            contents = new[] { new { role = "user", parts = new[] { new { text = prompt } } } },
-            generationConfig = new
-            {
-                temperature = 0.2,
-                responseMimeType = "application/json",
-                responseSchema = schema
-            }
-        };
-
-        string rawJson;
-        string usedModel;
+        StructuredCallResult<ClinicalSummaryResult> structured;
         try
         {
-            (rawJson, usedModel) = await PostGenerateContentWithFallbackAsync(modelToUse, payload, cancellationToken);
+            structured = await ExecuteStructuredGeminiCallWithRetryAsync<ClinicalSummaryResult>(
+                modelToUse,
+                prompt,
+                temperature: 0.2,
+                schema,
+                ValidateClinicalSummary,
+                cancellationToken);
         }
         catch (GeminiUpstreamUnavailableException ex)
         {
@@ -233,38 +231,36 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             return simFallback;
         }
 
-        var usage = ExtractUsageMetadata(rawJson);
-        var text = ExtractGeminiText(rawJson);
+        if (structured.Result == null)
+        {
+            _logger.LogWarning(
+                "Structured clinical summary failed validation after retry for patient #{PatientId}: {Error}. Returning fallback summary.",
+                patientId, structured.ValidationError);
+            var simFallback = BuildSimulatedLiveSummary(patient, sanitizedPayload, citations);
+            simFallback.AiGeneratedSummary = $"[Fallback Mode — Structured AI output validation failed] {simFallback.AiGeneratedSummary}";
+            simFallback.ModelUsed = "fallback-simulated";
+            await LogAiInteractionAsync("live-summary", patientId, prompt, null, simFallback.AiGeneratedSummary, "fallback-simulated", true, sw.ElapsedMilliseconds, cancellationToken, structured.Usage);
+            return simFallback;
+        }
 
+        var summaryData = structured.Result;
         var result = new LivePatientSummaryResponseDto
         {
             PatientId = patient.Id,
             PatientLabel = $"Patient #{patient.Id} ({patient.Age}y {patient.Gender})",
             TotalConsultationsFetchedFromDb = patient.Consultations.Count,
+            AiGeneratedSummary = summaryData.Summary!.Trim(),
+            AiIdentifiedRisks = summaryData.IdentifiedRisks!.Select(x => x.Trim()).Where(x => !string.IsNullOrWhiteSpace(x)).ToList(),
+            AiRecommendedActions = summaryData.RecommendedActions!.Select(x => x.Trim()).Where(x => !string.IsNullOrWhiteSpace(x)).ToList(),
+            UrgencyAssessment = summaryData.UrgencyAssessment!.Value.ToString(),
             SourceCitations = citations,
             SanitizedClinicalDataUsed = sanitizedPayload,
             IsSimulatedMode = false,
-            ModelUsed = usedModel,
+            ModelUsed = structured.ModelUsed,
             GeneratedAtUtc = DateTime.UtcNow
         };
 
-        try
-        {
-            using var parsed = JsonDocument.Parse(text);
-            var root = parsed.RootElement;
-            result.AiGeneratedSummary = root.TryGetProperty("summary", out var s) ? s.GetString() ?? text : text;
-            result.UrgencyAssessment = root.TryGetProperty("urgencyAssessment", out var u) ? u.GetString() ?? "Routine" : "Routine";
-            if (root.TryGetProperty("identifiedRisks", out var r) && r.ValueKind == JsonValueKind.Array)
-                result.AiIdentifiedRisks = r.EnumerateArray().Select(x => x.GetString() ?? "").Where(x => !string.IsNullOrWhiteSpace(x)).ToList();
-            if (root.TryGetProperty("recommendedActions", out var a) && a.ValueKind == JsonValueKind.Array)
-                result.AiRecommendedActions = a.EnumerateArray().Select(x => x.GetString() ?? "").Where(x => !string.IsNullOrWhiteSpace(x)).ToList();
-        }
-        catch
-        {
-            result.AiGeneratedSummary = text;
-        }
-
-        await LogAiInteractionAsync("live-summary", patientId, prompt, null, result.AiGeneratedSummary, usedModel, false, sw.ElapsedMilliseconds, cancellationToken, usage);
+        await LogAiInteractionAsync("live-summary", patientId, prompt, null, result.AiGeneratedSummary, structured.ModelUsed, false, sw.ElapsedMilliseconds, cancellationToken, structured.Usage);
         return result;
     }
 
@@ -323,7 +319,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             type = "OBJECT",
             properties = new
             {
-                urgencyLevel = new { type = "STRING" },
+                urgencyLevel = new { type = "STRING", @enum = Enum.GetNames<TriageUrgencyLevel>() },
                 recommendedSpecialty = new { type = "STRING" },
                 triageNotes = new { type = "STRING" },
                 redFlagQuestions = new { type = "ARRAY", items = new { type = "STRING" } },
@@ -332,23 +328,16 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             required = new[] { "urgencyLevel", "recommendedSpecialty", "triageNotes", "redFlagQuestions", "suggestedNextSteps" }
         };
 
-        var payload = new
-        {
-            systemInstruction = new { parts = new[] { new { text = ClinicalSystemInstruction } } },
-            contents = new[] { new { role = "user", parts = new[] { new { text = sanitizedPrompt } } } },
-            generationConfig = new
-            {
-                temperature = 0.1,
-                responseMimeType = "application/json",
-                responseSchema = schema
-            }
-        };
-
-        string rawJson;
-        string usedModel;
+        StructuredCallResult<TriageAssessmentResult> structured;
         try
         {
-            (rawJson, usedModel) = await PostGenerateContentWithFallbackAsync(modelToUse, payload, cancellationToken);
+            structured = await ExecuteStructuredGeminiCallWithRetryAsync<TriageAssessmentResult>(
+                modelToUse,
+                sanitizedPrompt,
+                temperature: 0.1,
+                schema,
+                ValidateTriageAssessment,
+                cancellationToken);
         }
         catch (GeminiUpstreamUnavailableException ex)
         {
@@ -359,27 +348,31 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             return simFallback;
         }
 
-        var usage = ExtractUsageMetadata(rawJson);
-        var text = ExtractGeminiText(rawJson);
-
-        var triage = new AiTriageResponseDto { IsSimulatedMode = false, AnalyzedAtUtc = DateTime.UtcNow };
-        try
+        if (structured.Result == null)
         {
-            var parsed = JsonSerializer.Deserialize<AiTriageResponseDto>(text, JsonOptions);
-            if (parsed != null)
-            {
-                triage = parsed;
-                triage.IsSimulatedMode = false;
-                triage.Disclaimer = AiSafetyConstants.ClinicalDisclaimer;
-                triage.AnalyzedAtUtc = DateTime.UtcNow;
-            }
-        }
-        catch
-        {
-            triage.TriageNotes = text;
+            _logger.LogWarning(
+                "Structured triage failed validation after retry: {Error}. Falling back to local simulated triage.",
+                structured.ValidationError);
+            var simFallback = BuildSimulatedTriage(request);
+            simFallback.TriageNotes = $"[Fallback Mode — Structured AI output validation failed] {simFallback.TriageNotes}";
+            await LogAiInteractionAsync("triage", null, sanitizedPrompt, null, simFallback.TriageNotes, "fallback-simulated", true, sw.ElapsedMilliseconds, cancellationToken, structured.Usage);
+            return simFallback;
         }
 
-        await LogAiInteractionAsync("triage", null, sanitizedPrompt, null, triage.TriageNotes, usedModel, false, sw.ElapsedMilliseconds, cancellationToken, usage);
+        var triageData = structured.Result;
+        var triage = new AiTriageResponseDto
+        {
+            UrgencyLevel = triageData.UrgencyLevel!.Value.ToString(),
+            RecommendedSpecialty = triageData.RecommendedSpecialty!.Trim(),
+            TriageNotes = triageData.TriageNotes!.Trim(),
+            RedFlagQuestions = triageData.RedFlagQuestions!.Select(x => x.Trim()).Where(x => !string.IsNullOrWhiteSpace(x)).ToList(),
+            SuggestedNextSteps = triageData.SuggestedNextSteps!.Select(x => x.Trim()).Where(x => !string.IsNullOrWhiteSpace(x)).ToList(),
+            IsSimulatedMode = false,
+            Disclaimer = AiSafetyConstants.ClinicalDisclaimer,
+            AnalyzedAtUtc = DateTime.UtcNow
+        };
+
+        await LogAiInteractionAsync("triage", null, sanitizedPrompt, null, triage.TriageNotes, structured.ModelUsed, false, sw.ElapsedMilliseconds, cancellationToken, structured.Usage);
         return triage;
     }
 
@@ -1350,6 +1343,189 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         var inputCost = (usage.PromptTokens / 1_000_000m) * inputPerMillion.Value;
         var outputCost = (usage.CompletionTokens / 1_000_000m) * outputPerMillion.Value;
         return Math.Round(inputCost + outputCost, 8, MidpointRounding.AwayFromZero);
+    }
+
+    private sealed record StructuredCallResult<T>(
+        T? Result,
+        string ModelUsed,
+        TokenUsage Usage,
+        string? ValidationError) where T : class;
+
+    private async Task<StructuredCallResult<T>> ExecuteStructuredGeminiCallWithRetryAsync<T>(
+        string modelToUse,
+        string initialPrompt,
+        double temperature,
+        object schema,
+        Func<T, List<string>> validator,
+        CancellationToken cancellationToken) where T : class
+    {
+        var cumulativeUsage = new TokenUsage();
+        var currentPrompt = initialPrompt;
+        var lastUsedModel = modelToUse;
+        string? lastError = null;
+
+        // Initial attempt + at most 1 retry with the validation error injected into the prompt
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            var payload = new
+            {
+                systemInstruction = new
+                {
+                    parts = new[] { new { text = ClinicalSystemInstruction } }
+                },
+                contents = new[]
+                {
+                    new { role = "user", parts = new[] { new { text = currentPrompt } } }
+                },
+                generationConfig = new
+                {
+                    temperature,
+                    responseMimeType = "application/json",
+                    responseSchema = schema
+                }
+            };
+
+            var (rawJson, usedModel) = await PostGenerateContentWithFallbackAsync(lastUsedModel, payload, cancellationToken);
+            lastUsedModel = usedModel;
+            cumulativeUsage.AddFrom(ExtractUsageMetadata(rawJson));
+
+            var text = ExtractGeminiText(rawJson);
+            if (TryDeserializeAndValidate(text, validator, out var parsed, out var validationError))
+            {
+                return new StructuredCallResult<T>(parsed, lastUsedModel, cumulativeUsage, null);
+            }
+
+            lastError = validationError;
+            if (attempt == 0)
+            {
+                _logger.LogWarning(
+                    "Structured Gemini output for {TypeName} failed validation on attempt 1 ({Error}); retrying once with error feedback.",
+                    typeof(T).Name, lastError);
+
+                currentPrompt =
+                    $"{initialPrompt}\n\n" +
+                    $"Your previous response failed JSON schema validation with the following error(s):\n" +
+                    $"{lastError}\n" +
+                    $"Return ONLY a valid JSON object matching the exact schema, required fields, length limits, and allowed enum values.";
+            }
+        }
+
+        return new StructuredCallResult<T>(null, lastUsedModel, cumulativeUsage, lastError);
+    }
+
+    private static bool TryDeserializeAndValidate<T>(
+        string jsonText,
+        Func<T, List<string>> validator,
+        out T? result,
+        out string? error) where T : class
+    {
+        result = null;
+        if (string.IsNullOrWhiteSpace(jsonText))
+        {
+            error = "Response text was empty; expected a valid JSON object.";
+            return false;
+        }
+
+        T? parsed;
+        try
+        {
+            parsed = JsonSerializer.Deserialize<T>(jsonText, StrictStructuredJsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            error = $"Malformed JSON or invalid enum value: {ex.Message}";
+            return false;
+        }
+
+        if (parsed == null)
+        {
+            error = "Deserialized JSON object was null.";
+            return false;
+        }
+
+        var errors = validator(parsed);
+        if (errors.Count > 0)
+        {
+            error = string.Join("; ", errors);
+            return false;
+        }
+
+        result = parsed;
+        error = null;
+        return true;
+    }
+
+    private static List<string> ValidateClinicalSummary(ClinicalSummaryResult r)
+    {
+        var errors = new List<string>();
+        if (string.IsNullOrWhiteSpace(r.Summary))
+            errors.Add("summary is required and cannot be empty");
+        else if (r.Summary.Length > 4000)
+            errors.Add("summary must not exceed 4000 characters");
+
+        if (!r.UrgencyAssessment.HasValue || !Enum.IsDefined(r.UrgencyAssessment.Value))
+            errors.Add($"urgencyAssessment is required and must be one of: {string.Join(", ", Enum.GetNames<ClinicalUrgencyLevel>())}");
+
+        if (r.IdentifiedRisks == null)
+            errors.Add("identifiedRisks is required");
+        else
+        {
+            if (r.IdentifiedRisks.Count > 20)
+                errors.Add("identifiedRisks must contain at most 20 items");
+            if (r.IdentifiedRisks.Any(item => item != null && item.Length > 500))
+                errors.Add("each identifiedRisks entry must not exceed 500 characters");
+        }
+
+        if (r.RecommendedActions == null)
+            errors.Add("recommendedActions is required");
+        else
+        {
+            if (r.RecommendedActions.Count > 20)
+                errors.Add("recommendedActions must contain at most 20 items");
+            if (r.RecommendedActions.Any(item => item != null && item.Length > 500))
+                errors.Add("each recommendedActions entry must not exceed 500 characters");
+        }
+
+        return errors;
+    }
+
+    private static List<string> ValidateTriageAssessment(TriageAssessmentResult r)
+    {
+        var errors = new List<string>();
+        if (!r.UrgencyLevel.HasValue || !Enum.IsDefined(r.UrgencyLevel.Value))
+            errors.Add($"urgencyLevel is required and must be one of: {string.Join(", ", Enum.GetNames<TriageUrgencyLevel>())}");
+
+        if (string.IsNullOrWhiteSpace(r.RecommendedSpecialty))
+            errors.Add("recommendedSpecialty is required and cannot be empty");
+        else if (r.RecommendedSpecialty.Length > 200)
+            errors.Add("recommendedSpecialty must not exceed 200 characters");
+
+        if (string.IsNullOrWhiteSpace(r.TriageNotes))
+            errors.Add("triageNotes is required and cannot be empty");
+        else if (r.TriageNotes.Length > 4000)
+            errors.Add("triageNotes must not exceed 4000 characters");
+
+        if (r.RedFlagQuestions == null)
+            errors.Add("redFlagQuestions is required");
+        else
+        {
+            if (r.RedFlagQuestions.Count > 15)
+                errors.Add("redFlagQuestions must contain at most 15 items");
+            if (r.RedFlagQuestions.Any(item => item != null && item.Length > 500))
+                errors.Add("each redFlagQuestions entry must not exceed 500 characters");
+        }
+
+        if (r.SuggestedNextSteps == null)
+            errors.Add("suggestedNextSteps is required");
+        else
+        {
+            if (r.SuggestedNextSteps.Count > 15)
+                errors.Add("suggestedNextSteps must contain at most 15 items");
+            if (r.SuggestedNextSteps.Any(item => item != null && item.Length > 500))
+                errors.Add("each suggestedNextSteps entry must not exceed 500 characters");
+        }
+
+        return errors;
     }
 
     private static LivePatientSummaryResponseDto BuildSimulatedLiveSummary(

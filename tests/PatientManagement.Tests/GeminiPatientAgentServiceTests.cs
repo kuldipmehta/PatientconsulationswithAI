@@ -786,10 +786,10 @@ public class GeminiPatientAgentServiceTests : IDisposable
                                     text = JsonSerializer.Serialize(new
                                     {
                                         urgencyLevel = "Low",
-                                        triageSummary = "Mild tension headache.",
-                                        possibleConditions = new[] { "Tension headache" },
-                                        recommendedNextSteps = new[] { "Hydration and rest" },
-                                        recommendedSpecialty = "General Practice"
+                                        recommendedSpecialty = "General Practice",
+                                        triageNotes = "Mild tension headache.",
+                                        redFlagQuestions = new[] { "Any sudden vision changes?" },
+                                        suggestedNextSteps = new[] { "Hydration and rest" }
                                     })
                                 }
                             }
@@ -1015,6 +1015,192 @@ public class GeminiPatientAgentServiceTests : IDisposable
         log.CompletionTokens.Should().Be(150);
         log.TotalTokens.Should().Be(950);
         log.EstimatedCostUsd.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task SummarizePatientLiveAsync_WithMalformedJson_RetriesOnceWithErrorThenUsesFallback()
+    {
+        // Arrange
+        _patientServiceMock
+            .Setup(s => s.GetPatientByIdAsync(15, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PatientResponseDto { Id = 15, FirstName = "Mark", LastName = "Twain", Age = 60, Gender = "Male" });
+
+        var outboundBodies = new List<string>();
+        var handler = new StubHttpMessageHandler(async (req, ct) =>
+        {
+            outboundBodies.Add(await req.Content!.ReadAsStringAsync(ct));
+            var malformedPayload = JsonSerializer.Serialize(new
+            {
+                candidates = new[]
+                {
+                    new { content = new { parts = new[] { new { text = "{ malformed json without closing brace" } } } }
+                },
+                usageMetadata = new { promptTokenCount = 100, candidatesTokenCount = 20, totalTokenCount = 120 }
+            });
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(malformedPayload, Encoding.UTF8, "application/json")
+            };
+        });
+
+        var liveConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "Gemini:ApiKey", "test-structured-key" },
+                { "Gemini:Model", "gemini-2.5-flash" },
+                { "Gemini:AllowedModels:0", "gemini-2.5-flash" }
+            })
+            .Build();
+
+        var liveAgent = new GeminiPatientAgentService(
+            new HttpClient(handler),
+            _dbContext,
+            liveConfig,
+            _patientServiceMock.Object,
+            _consultationServiceMock.Object,
+            _doctorServiceMock.Object,
+            _loggerMock.Object);
+
+        // Act
+        var result = await liveAgent.SummarizePatientLiveAsync(15);
+
+        // Assert: Exactly 1 initial attempt + 1 retry = 2 calls, then falls back cleanly
+        outboundBodies.Should().HaveCount(2);
+        outboundBodies[0].Should().Contain("\"responseMimeType\":\"application/json\"");
+        outboundBodies[0].Should().Contain("\"responseSchema\"");
+        outboundBodies[1].Should().Contain("failed JSON schema validation");
+        outboundBodies[1].Should().Contain("Malformed JSON");
+
+        result.IsSimulatedMode.Should().BeTrue();
+        result.ModelUsed.Should().Be("fallback-simulated");
+        result.AiGeneratedSummary.Should().Contain("Fallback Mode");
+    }
+
+    [Fact]
+    public async Task SummarizePatientLiveAsync_WithUnknownUrgencyEnum_RejectsAndRetriesSuccessfully()
+    {
+        // Arrange
+        _patientServiceMock
+            .Setup(s => s.GetPatientByIdAsync(16, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PatientResponseDto { Id = 16, FirstName = "Ada", LastName = "Lovelace", Age = 36, Gender = "Female" });
+
+        int attempt = 0;
+        var outboundBodies = new List<string>();
+        var handler = new StubHttpMessageHandler(async (req, ct) =>
+        {
+            attempt++;
+            outboundBodies.Add(await req.Content!.ReadAsStringAsync(ct));
+
+            var text = attempt == 1
+                ? JsonSerializer.Serialize(new
+                {
+                    summary = "Summary with invalid urgency.",
+                    identifiedRisks = new[] { "Risk A" },
+                    recommendedActions = new[] { "Follow up" },
+                    urgencyAssessment = "SuperCriticalUnknown" // Invalid enum value!
+                })
+                : JsonSerializer.Serialize(new
+                {
+                    summary = "Summary with valid urgency after retry.",
+                    identifiedRisks = new[] { "Risk A" },
+                    recommendedActions = new[] { "Follow up within 24h" },
+                    urgencyAssessment = "Urgent"
+                });
+
+            var json = JsonSerializer.Serialize(new
+            {
+                candidates = new[] { new { content = new { parts = new[] { new { text } } } } }
+            });
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            };
+        });
+
+        var liveConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "Gemini:ApiKey", "test-structured-key" },
+                { "Gemini:Model", "gemini-2.5-flash" },
+                { "Gemini:AllowedModels:0", "gemini-2.5-flash" }
+            })
+            .Build();
+
+        var liveAgent = new GeminiPatientAgentService(
+            new HttpClient(handler),
+            _dbContext,
+            liveConfig,
+            _patientServiceMock.Object,
+            _consultationServiceMock.Object,
+            _doctorServiceMock.Object,
+            _loggerMock.Object);
+
+        // Act
+        var result = await liveAgent.SummarizePatientLiveAsync(16);
+
+        // Assert: Invalid urgency rejected on attempt 1, retry includes error, succeeds on attempt 2
+        attempt.Should().Be(2);
+        outboundBodies[1].Should().Contain("failed JSON schema validation");
+        result.IsSimulatedMode.Should().BeFalse();
+        result.UrgencyAssessment.Should().Be("Urgent");
+        result.AiGeneratedSummary.Should().Be("Summary with valid urgency after retry.");
+    }
+
+    [Fact]
+    public async Task TriageSymptomsAsync_WithUnknownUrgencyEnum_RejectsRetriesOnceThenFallsBack()
+    {
+        // Arrange
+        int callCount = 0;
+        var handler = new StubHttpMessageHandler((_, _) =>
+        {
+            callCount++;
+            var invalidUrgencyText = JsonSerializer.Serialize(new
+            {
+                urgencyLevel = "CatastrophicInvalid", // Not in Low/Medium/High/Emergency
+                recommendedSpecialty = "General Practice",
+                triageNotes = "Some notes",
+                redFlagQuestions = new[] { "Any fever?" },
+                suggestedNextSteps = new[] { "Rest" }
+            });
+            var json = JsonSerializer.Serialize(new
+            {
+                candidates = new[] { new { content = new { parts = new[] { new { text = invalidUrgencyText } } } } }
+            });
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            });
+        });
+
+        var liveConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "Gemini:ApiKey", "test-structured-key" },
+                { "Gemini:Model", "gemini-2.5-flash" },
+                { "Gemini:AllowedModels:0", "gemini-2.5-flash" }
+            })
+            .Build();
+
+        var liveAgent = new GeminiPatientAgentService(
+            new HttpClient(handler),
+            _dbContext,
+            liveConfig,
+            _patientServiceMock.Object,
+            _consultationServiceMock.Object,
+            _doctorServiceMock.Object,
+            _loggerMock.Object);
+
+        // Act
+        var triage = await liveAgent.TriageSymptomsAsync(new AiTriageRequestDto
+        {
+            Symptoms = "Mild seasonal runny nose and sneezing"
+        });
+
+        // Assert: Rejected on attempt 1, retried once, then fell back safely without propagating unknown enum
+        callCount.Should().Be(2);
+        triage.IsSimulatedMode.Should().BeTrue();
+        triage.UrgencyLevel.Should().NotBe("CatastrophicInvalid");
+        triage.TriageNotes.Should().Contain("Fallback Mode");
     }
 
     public void Dispose()
