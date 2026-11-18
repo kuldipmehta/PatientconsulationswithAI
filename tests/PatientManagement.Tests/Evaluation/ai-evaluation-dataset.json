@@ -29,6 +29,23 @@
     { "id": "SUM-25", "patientId": 102, "firstName": "Bob", "lastName": "MaskedSurname", "age": 61, "gender": "Male", "medicalNotes": "Atrial fibrillation on apixaban", "consultationId": 1002, "diagnosis": "INR & Anticoagulation Review", "expectedMustContain": "apixaban", "expectedMustNotContain": "MaskedSurname" },
     { "id": "SUM-26", "patientId": 103, "firstName": "Carol", "lastName": "PrivateFamily", "age": 29, "gender": "Female", "medicalNotes": "Asthma; albuterol rescue inhaler", "consultationId": 1003, "diagnosis": "Seasonal Asthma Flare", "expectedMustContain": "Asthma", "expectedMustNotContain": "PrivateFamily" },
     { "id": "SUM-27", "patientId": 104, "firstName": "David", "lastName": "Confidential", "age": 55, "gender": "Male", "medicalNotes": "Type 2 diabetes mellitus", "consultationId": 1004, "diagnosis": "Annual Retinal & HbA1c Screening", "expectedMustContain": "1004", "expectedMustNotContain": "Confidential" },
-    { "id": "SUM-28", "patientId": 105, "firstName": "Eve", "lastName": "SecretIdentity", "age": 37, "gender": "Female", "medicalNotes": "Hypothyroidism on levothyroxine", "consultationId": 1005, "diagnosis": "TSH Lab Monitoring", "expectedMustContain": "levothyroxine", "expectedMustNotContain": "SecretIdentity" }
+    { "id": "SUM-28", "patientId": 105, "firstName": "Eve", "lastName": "SecretIdentity", "age": 37, "gender": "Female", "medicalNotes": "Hypothyroidism on levothyroxine", "consultationId": 1005, "diagnosis": "TSH Lab Monitoring", "expectedMustContain": "levothyroxine", "expectedMustNotContain": "SecretIdentity" },
+    { "id": "SUM-29", "patientId": 106, "firstName": "Frank", "lastName": "RedactedLast", "age": 48, "gender": "Male", "medicalNotes": "Elevated SGPT (ALT) 74 U/L; fatty liver", "consultationId": 1006, "diagnosis": "Liver Function Panel Review", "expectedMustContain": "1006", "expectedMustNotContain": "RedactedLast" },
+    { "id": "SUM-30", "patientId": 107, "firstName": "Grace", "lastName": "OmittedName", "age": 66, "gender": "Female", "medicalNotes": "Stage 3 chronic kidney disease; avoid NSAIDs", "consultationId": 1007, "diagnosis": "Renal Function & eGFR Follow-up", "expectedMustContain": "NSAIDs", "expectedMustNotContain": "OmittedName" },
+    { "id": "SUM-31", "patientId": 108, "firstName": "Henry", "lastName": "ProtectedSurname", "age": 58, "gender": "Male", "medicalNotes": "Hyperlipidemia on atorvastatin 20mg", "consultationId": 1008, "diagnosis": "Lipid Profile Review", "expectedMustContain": "atorvastatin", "expectedMustNotContain": "ProtectedSurname" },
+    { "id": "SUM-32", "patientId": 109, "firstName": "Irene", "lastName": "PrivateName", "age": 72, "gender": "Female", "medicalNotes": "COPD moderate; tiotropium daily inhaler", "consultationId": 1009, "diagnosis": "Pulmonary Function Assessment", "expectedMustContain": "COPD", "expectedMustNotContain": "PrivateName" },
+    { "id": "SUM-33", "patientId": 110, "firstName": "Jack", "lastName": "HiddenSurname", "age": 31, "gender": "Male", "medicalNotes": "Iron deficiency anemia; ferritin 11 ng/mL", "consultationId": 1010, "diagnosis": "Hematology Iron Supplement Check", "expectedMustContain": "anemia", "expectedMustNotContain": "HiddenSurname" }
+  ],
+  "extractionCases": [
+    { "id": "EXT-01", "symptoms": "High fever of 102.8F with sinus pressure and productive cough for 3 days", "age": 38, "gender": "Female", "existingConditions": "Mild seasonal allergies", "expectedMustContain": "fever" },
+    { "id": "EXT-02", "symptoms": "Twisted right ankle on stairs with localized swelling and pain on weight bearing", "age": 27, "gender": "Male", "existingConditions": "None", "expectedMustContain": "ankle" },
+    { "id": "EXT-03", "symptoms": "Recurring throbbing migraine with photophobia and nausea lasting 12 hours", "age": 34, "gender": "Female", "existingConditions": "History of migraines", "expectedMustContain": "migraine" },
+    { "id": "EXT-04", "symptoms": "Mild burning sensation with urination and increased frequency for 2 days without flank pain", "age": 45, "gender": "Female", "existingConditions": "None", "expectedMustContain": "urin" }
+  ],
+  "toolSelectionCases": [
+    { "id": "TOOL-01", "prompt": "Search our patient directory for anyone named Eleanor.", "patientContextId": null, "expectedToolName": "search_patients" },
+    { "id": "TOOL-02", "prompt": "Fetch the clinical record and past consultations for patient ID 101.", "patientContextId": 101, "expectedToolName": "get_patient_details" },
+    { "id": "TOOL-03", "prompt": "Check Dr. Sarah Jenkins (doctor ID 1) availability for 2026-11-25.", "patientContextId": null, "expectedToolName": "get_doctor_availability" },
+    { "id": "TOOL-04", "prompt": "Please propose a follow-up consultation for patient ID 101 with Dr. Sarah Jenkins on 2026-11-25T10:00:00Z for hypertension review.", "patientContextId": 101, "expectedToolName": "propose_consultation" }
   ]
 }

@@ -1203,6 +1203,91 @@ public class GeminiPatientAgentServiceTests : IDisposable
         triage.TriageNotes.Should().Contain("Fallback Mode");
     }
 
+    [Fact]
+    public async Task SummarizePatientLiveAsync_RespectsConfigurableGenerationParamsAndPromptVersion()
+    {
+        // Arrange
+        _patientServiceMock
+            .Setup(s => s.GetPatientByIdAsync(21, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PatientResponseDto { Id = 21, FirstName = "Prompt", LastName = "Test", Age = 40, Gender = "Male" });
+
+        var capturedPayloads = new List<string>();
+        var handler = new StubHttpMessageHandler(async (req, ct) =>
+        {
+            capturedPayloads.Add(await req.Content!.ReadAsStringAsync(ct));
+            var text = JsonSerializer.Serialize(new
+            {
+                summary = "Patient #21 structured summary.",
+                identifiedRisks = new[] { "None noted" },
+                recommendedActions = new[] { "Routine annual checkup" },
+                urgencyAssessment = "Routine"
+            });
+            var json = JsonSerializer.Serialize(new
+            {
+                candidates = new[] { new { content = new { parts = new[] { new { text } } } } }
+            });
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            };
+        });
+
+        // 1. Run with summary.v1 and custom generation parameters
+        var v1Config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "Gemini:ApiKey", "test-prompt-key" },
+                { "Gemini:Model", "gemini-2.5-flash" },
+                { "Gemini:AllowedModels:0", "gemini-2.5-flash" },
+                { "Gemini:Features:Summary:Temperature", "0.4" },
+                { "Gemini:Features:Summary:TopP", "0.8" },
+                { "Gemini:Features:Summary:MaxOutputTokens", "768" },
+                { "Gemini:Features:Summary:PromptVersion", "summary.v1" }
+            })
+            .Build();
+
+        var agentV1 = new GeminiPatientAgentService(
+            new HttpClient(handler), _dbContext, v1Config,
+            _patientServiceMock.Object, _consultationServiceMock.Object, _doctorServiceMock.Object, _loggerMock.Object);
+
+        await agentV1.SummarizePatientLiveAsync(21);
+
+        // 2. Switch PromptVersion to summary.v2 and Temperature to 0.0
+        var v2Config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "Gemini:ApiKey", "test-prompt-key" },
+                { "Gemini:Model", "gemini-2.5-flash" },
+                { "Gemini:AllowedModels:0", "gemini-2.5-flash" },
+                { "Gemini:Features:Summary:Temperature", "0.0" },
+                { "Gemini:Features:Summary:TopP", "0.95" },
+                { "Gemini:Features:Summary:MaxOutputTokens", "512" },
+                { "Gemini:Features:Summary:PromptVersion", "summary.v2" }
+            })
+            .Build();
+
+        var agentV2 = new GeminiPatientAgentService(
+            new HttpClient(handler), _dbContext, v2Config,
+            _patientServiceMock.Object, _consultationServiceMock.Object, _doctorServiceMock.Object, _loggerMock.Object);
+
+        await agentV2.SummarizePatientLiveAsync(21);
+
+        // Assert: Logged PromptVersion reflects config change AND generationConfig/systemInstruction changed
+        var logs = await _dbContext.AiInteractionLogs.OrderBy(l => l.Id).ToListAsync();
+        logs.Should().HaveCount(2);
+        logs[0].PromptVersion.Should().Be("summary.v1");
+        logs[1].PromptVersion.Should().Be("summary.v2");
+
+        capturedPayloads[0].Should().Contain("\"temperature\":0.4");
+        capturedPayloads[0].Should().Contain("\"topP\":0.8");
+        capturedPayloads[0].Should().Contain("\"maxOutputTokens\":768");
+
+        capturedPayloads[1].Should().Contain("\"temperature\":0");
+        capturedPayloads[1].Should().Contain("\"topP\":0.95");
+        capturedPayloads[1].Should().Contain("\"maxOutputTokens\":512");
+        capturedPayloads[1].Should().Contain("Prompt v2");
+    }
+
     public void Dispose()
     {
         _dbContext.Database.EnsureDeleted();

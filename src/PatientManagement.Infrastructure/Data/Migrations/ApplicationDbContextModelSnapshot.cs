@@ -121,6 +121,10 @@ namespace PatientManagement.Infrastructure.Data.Migrations
                     b.Property<int?>("PromptTokens")
                         .HasColumnType("int");
 
+                    b.Property<string>("PromptVersion")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
                     b.Property<string>("ResponseSummary")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");

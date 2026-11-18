@@ -48,6 +48,17 @@ public static class DependencyInjection
             client.Timeout = TimeSpan.FromSeconds(60);
         });
 
+        // Provider-agnostic ILlmClient registrations (Gemini + local Ollama)
+        services.AddHttpClient<GeminiLlmClient>(client => client.Timeout = TimeSpan.FromSeconds(60));
+        services.AddHttpClient<OllamaLlmClient>(client => client.Timeout = TimeSpan.FromSeconds(120));
+        services.AddTransient<ILlmClient>(sp =>
+        {
+            var provider = configuration["Llm:Provider"];
+            return string.Equals(provider, "Ollama", StringComparison.OrdinalIgnoreCase)
+                ? sp.GetRequiredService<OllamaLlmClient>()
+                : sp.GetRequiredService<GeminiLlmClient>();
+        });
+
         // Google Gemini AI Client with Polly-backed Standard Resilience (Retries, Timeouts, Circuit Breaker)
         services.AddHttpClient<IAiPatientAgentService, GeminiPatientAgentService>(client =>
         {

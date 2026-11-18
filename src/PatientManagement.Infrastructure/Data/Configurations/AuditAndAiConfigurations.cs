@@ -31,6 +31,7 @@ public class AuditAndAiConfigurations :
         builder.Property(a => a.UserRole).IsRequired().HasMaxLength(40);
         builder.Property(a => a.Endpoint).IsRequired().HasMaxLength(120);
         builder.Property(a => a.ModelUsed).IsRequired().HasMaxLength(80);
+        builder.Property(a => a.PromptVersion).HasMaxLength(64);
         builder.Property(a => a.EstimatedCostUsd).HasPrecision(18, 8);
         builder.HasIndex(a => a.CreatedAtUtc);
     }

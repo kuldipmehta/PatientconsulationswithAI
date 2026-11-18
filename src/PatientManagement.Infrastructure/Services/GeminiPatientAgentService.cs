@@ -16,6 +16,7 @@ using PatientManagement.Core.Entities;
 using PatientManagement.Core.Enums;
 using PatientManagement.Core.Exceptions;
 using PatientManagement.Core.Interfaces;
+using PatientManagement.Core.Options;
 using PatientManagement.Infrastructure.Data;
 using PatientManagement.Infrastructure.Services.Ai;
 
@@ -188,11 +189,13 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         var sanitizedPayload = PatientAiSanitizer.BuildMinimizedClinicalPayload(patient, chunks);
         var citations = PatientAiSanitizer.ExtractCitations(patient, chunks);
         var modelToUse = ResolveModel(explicitModel);
+        var featureOptions = GetFeatureGenerationOptions("Summary", 0.2, 0.9, 1024, "summary.v1");
+        var (systemPrompt, promptVersion) = PromptTemplateLoader.Load(featureOptions.PromptVersion, ClinicalSystemInstruction);
 
         if (!HasLiveApiKey)
         {
             var simulated = BuildSimulatedLiveSummary(patient, sanitizedPayload, citations);
-            await LogAiInteractionAsync("live-summary", patientId, "Simulated live clinical summary", null, simulated.AiGeneratedSummary, "local-simulated", true, sw.ElapsedMilliseconds, cancellationToken);
+            await LogAiInteractionAsync("live-summary", patientId, "Simulated live clinical summary", null, simulated.AiGeneratedSummary, "local-simulated", true, sw.ElapsedMilliseconds, cancellationToken, promptVersion: promptVersion);
             return simulated;
         }
 
@@ -215,8 +218,9 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         {
             structured = await ExecuteStructuredGeminiCallWithRetryAsync<ClinicalSummaryResult>(
                 modelToUse,
+                systemPrompt,
                 prompt,
-                temperature: 0.2,
+                featureOptions,
                 schema,
                 ValidateClinicalSummary,
                 cancellationToken);
@@ -227,7 +231,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             var simFallback = BuildSimulatedLiveSummary(patient, sanitizedPayload, citations);
             simFallback.AiGeneratedSummary = $"[Fallback Mode — Google Gemini temporarily unavailable (503/429)] {simFallback.AiGeneratedSummary}";
             simFallback.ModelUsed = "fallback-simulated";
-            await LogAiInteractionAsync("live-summary", patientId, prompt, null, simFallback.AiGeneratedSummary, "fallback-simulated", true, sw.ElapsedMilliseconds, cancellationToken);
+            await LogAiInteractionAsync("live-summary", patientId, prompt, null, simFallback.AiGeneratedSummary, "fallback-simulated", true, sw.ElapsedMilliseconds, cancellationToken, promptVersion: promptVersion);
             return simFallback;
         }
 
@@ -239,7 +243,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             var simFallback = BuildSimulatedLiveSummary(patient, sanitizedPayload, citations);
             simFallback.AiGeneratedSummary = $"[Fallback Mode — Structured AI output validation failed] {simFallback.AiGeneratedSummary}";
             simFallback.ModelUsed = "fallback-simulated";
-            await LogAiInteractionAsync("live-summary", patientId, prompt, null, simFallback.AiGeneratedSummary, "fallback-simulated", true, sw.ElapsedMilliseconds, cancellationToken, structured.Usage);
+            await LogAiInteractionAsync("live-summary", patientId, prompt, null, simFallback.AiGeneratedSummary, "fallback-simulated", true, sw.ElapsedMilliseconds, cancellationToken, structured.Usage, promptVersion);
             return simFallback;
         }
 
@@ -260,7 +264,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             GeneratedAtUtc = DateTime.UtcNow
         };
 
-        await LogAiInteractionAsync("live-summary", patientId, prompt, null, result.AiGeneratedSummary, structured.ModelUsed, false, sw.ElapsedMilliseconds, cancellationToken, structured.Usage);
+        await LogAiInteractionAsync("live-summary", patientId, prompt, null, result.AiGeneratedSummary, structured.ModelUsed, false, sw.ElapsedMilliseconds, cancellationToken, structured.Usage, promptVersion);
         return result;
     }
 
@@ -291,11 +295,14 @@ public class GeminiPatientAgentService : IAiPatientAgentService
     {
         var sw = Stopwatch.StartNew();
 
+        var featureOptions = GetFeatureGenerationOptions("Triage", 0.1, 0.85, 1024, "triage.v1");
+        var (systemPrompt, promptVersion) = PromptTemplateLoader.Load(featureOptions.PromptVersion, ClinicalSystemInstruction);
+
         // 1. Deterministic emergency red-flag check runs BEFORE any LLM call
         var emergencyCheck = EmergencyTriageRuleEngine.Evaluate(request.Symptoms, request.ExistingConditions, !HasLiveApiKey);
         if (emergencyCheck.Triggered && emergencyCheck.Response != null)
         {
-            await LogAiInteractionAsync("triage", null, $"RuleEngine:{emergencyCheck.RuleName}", null, emergencyCheck.Response.TriageNotes, "rule-engine", !HasLiveApiKey, sw.ElapsedMilliseconds, cancellationToken);
+            await LogAiInteractionAsync("triage", null, $"RuleEngine:{emergencyCheck.RuleName}", null, emergencyCheck.Response.TriageNotes, "rule-engine", !HasLiveApiKey, sw.ElapsedMilliseconds, cancellationToken, promptVersion: promptVersion);
             return emergencyCheck.Response;
         }
 
@@ -303,7 +310,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         if (!HasLiveApiKey)
         {
             var sim = BuildSimulatedTriage(request);
-            await LogAiInteractionAsync("triage", null, request.Symptoms, null, sim.TriageNotes, "local-simulated", true, sw.ElapsedMilliseconds, cancellationToken);
+            await LogAiInteractionAsync("triage", null, request.Symptoms, null, sim.TriageNotes, "local-simulated", true, sw.ElapsedMilliseconds, cancellationToken, promptVersion: promptVersion);
             return sim;
         }
 
@@ -333,8 +340,9 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         {
             structured = await ExecuteStructuredGeminiCallWithRetryAsync<TriageAssessmentResult>(
                 modelToUse,
+                systemPrompt,
                 sanitizedPrompt,
-                temperature: 0.1,
+                featureOptions,
                 schema,
                 ValidateTriageAssessment,
                 cancellationToken);
@@ -344,7 +352,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             _logger.LogWarning(ex, "Live Gemini triage unavailable; falling back to local rule/simulated triage.");
             var simFallback = BuildSimulatedTriage(request);
             simFallback.TriageNotes = $"[Fallback Mode — Google Gemini temporarily unavailable (503/429)] {simFallback.TriageNotes}";
-            await LogAiInteractionAsync("triage", null, sanitizedPrompt, null, simFallback.TriageNotes, "fallback-simulated", true, sw.ElapsedMilliseconds, cancellationToken);
+            await LogAiInteractionAsync("triage", null, sanitizedPrompt, null, simFallback.TriageNotes, "fallback-simulated", true, sw.ElapsedMilliseconds, cancellationToken, promptVersion: promptVersion);
             return simFallback;
         }
 
@@ -355,7 +363,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
                 structured.ValidationError);
             var simFallback = BuildSimulatedTriage(request);
             simFallback.TriageNotes = $"[Fallback Mode — Structured AI output validation failed] {simFallback.TriageNotes}";
-            await LogAiInteractionAsync("triage", null, sanitizedPrompt, null, simFallback.TriageNotes, "fallback-simulated", true, sw.ElapsedMilliseconds, cancellationToken, structured.Usage);
+            await LogAiInteractionAsync("triage", null, sanitizedPrompt, null, simFallback.TriageNotes, "fallback-simulated", true, sw.ElapsedMilliseconds, cancellationToken, structured.Usage, promptVersion);
             return simFallback;
         }
 
@@ -372,7 +380,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             AnalyzedAtUtc = DateTime.UtcNow
         };
 
-        await LogAiInteractionAsync("triage", null, sanitizedPrompt, null, triage.TriageNotes, structured.ModelUsed, false, sw.ElapsedMilliseconds, cancellationToken, structured.Usage);
+        await LogAiInteractionAsync("triage", null, sanitizedPrompt, null, triage.TriageNotes, structured.ModelUsed, false, sw.ElapsedMilliseconds, cancellationToken, structured.Usage, promptVersion);
         return triage;
     }
 
@@ -443,6 +451,9 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             }
         }
 
+        var chatFeatureOptions = GetFeatureGenerationOptions("Chat", 0.2, 0.9, 2048, "chat.v1");
+        var (chatSystemPrompt, chatPromptVersion) = PromptTemplateLoader.Load(chatFeatureOptions.PromptVersion, ClinicalSystemInstruction);
+
         string reply;
         TokenUsage? usage = null;
         bool isSimulated = !HasLiveApiKey;
@@ -455,7 +466,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         {
             try
             {
-                (reply, modelToUse, usage) = await RunLiveGeminiChatWithToolsAsync(session, request, modelToUse, toolsExecuted, pendingProposals, cancellationToken);
+                (reply, modelToUse, usage) = await RunLiveGeminiChatWithToolsAsync(session, request, modelToUse, chatSystemPrompt, chatFeatureOptions, toolsExecuted, pendingProposals, cancellationToken);
             }
             catch (GeminiUpstreamUnavailableException ex)
             {
@@ -480,7 +491,8 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             isSimulated,
             sw.ElapsedMilliseconds,
             cancellationToken,
-            usage);
+            usage,
+            chatPromptVersion);
 
         return new AiChatResponseDto
         {
@@ -619,6 +631,8 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         AiChatSession session,
         AiChatRequestDto request,
         string modelToUse,
+        string systemPrompt,
+        AiFeatureGenerationOptions featureOptions,
         List<string> toolsExecuted,
         List<PendingActionProposalDto> proposals,
         CancellationToken cancellationToken)
@@ -687,11 +701,16 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             {
                 ["systemInstruction"] = new JsonObject
                 {
-                    ["parts"] = new JsonArray(new JsonObject { ["text"] = ClinicalSystemInstruction })
+                    ["parts"] = new JsonArray(new JsonObject { ["text"] = systemPrompt })
                 },
                 ["contents"] = contents.DeepClone(),
                 ["tools"] = tools.DeepClone(),
-                ["generationConfig"] = new JsonObject { ["temperature"] = 0.2 }
+                ["generationConfig"] = new JsonObject
+                {
+                    ["temperature"] = featureOptions.Temperature,
+                    ["topP"] = featureOptions.TopP,
+                    ["maxOutputTokens"] = featureOptions.MaxOutputTokens
+                }
             };
 
             var (raw, usedModel) = await PostGenerateContentWithFallbackAsync(effectiveModel, payload, cancellationToken);
@@ -1230,7 +1249,8 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         bool isSimulated,
         long durationMs,
         CancellationToken cancellationToken,
-        TokenUsage? usage = null)
+        TokenUsage? usage = null,
+        string? promptVersion = null)
     {
         try
         {
@@ -1246,6 +1266,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
                 ToolCallsJson = toolCallsJson,
                 ResponseSummary = responseSummary.Length > 2000 ? responseSummary[..2000] : responseSummary,
                 ModelUsed = modelUsed,
+                PromptVersion = promptVersion,
                 IsSimulated = isSimulated,
                 DurationMs = durationMs,
                 LatencyMs = durationMs,
@@ -1261,6 +1282,28 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         {
             _logger.LogWarning(ex, "Failed to persist AiInteractionLog.");
         }
+    }
+
+    private AiFeatureGenerationOptions GetFeatureGenerationOptions(
+        string featureName,
+        double defaultTemperature,
+        double defaultTopP,
+        int defaultMaxOutputTokens,
+        string defaultPromptVersion)
+    {
+        var section = _configuration.GetSection($"Gemini:Features:{featureName}");
+        var temp = section.GetValue<double?>("Temperature") ?? defaultTemperature;
+        var topP = section.GetValue<double?>("TopP") ?? defaultTopP;
+        var maxTokens = section.GetValue<int?>("MaxOutputTokens") ?? defaultMaxOutputTokens;
+        var promptVersion = section["PromptVersion"];
+
+        return new AiFeatureGenerationOptions
+        {
+            Temperature = Math.Clamp(temp, 0.0, 2.0),
+            TopP = Math.Clamp(topP, 0.01, 1.0),
+            MaxOutputTokens = Math.Clamp(maxTokens, 64, 8192),
+            PromptVersion = string.IsNullOrWhiteSpace(promptVersion) ? defaultPromptVersion : promptVersion.Trim()
+        };
     }
 
     private sealed class TokenUsage
@@ -1353,8 +1396,9 @@ public class GeminiPatientAgentService : IAiPatientAgentService
 
     private async Task<StructuredCallResult<T>> ExecuteStructuredGeminiCallWithRetryAsync<T>(
         string modelToUse,
+        string systemPrompt,
         string initialPrompt,
-        double temperature,
+        AiFeatureGenerationOptions featureOptions,
         object schema,
         Func<T, List<string>> validator,
         CancellationToken cancellationToken) where T : class
@@ -1371,7 +1415,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             {
                 systemInstruction = new
                 {
-                    parts = new[] { new { text = ClinicalSystemInstruction } }
+                    parts = new[] { new { text = systemPrompt } }
                 },
                 contents = new[]
                 {
@@ -1379,7 +1423,9 @@ public class GeminiPatientAgentService : IAiPatientAgentService
                 },
                 generationConfig = new
                 {
-                    temperature,
+                    temperature = featureOptions.Temperature,
+                    topP = featureOptions.TopP,
+                    maxOutputTokens = featureOptions.MaxOutputTokens,
                     responseMimeType = "application/json",
                     responseSchema = schema
                 }

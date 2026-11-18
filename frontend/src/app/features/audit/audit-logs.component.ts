@@ -100,6 +100,7 @@ import { extractApiErrorMessage } from '../../core/http-error.util';
                   {{ row.isSimulated ? 'Simulated' : 'Live Gemini' }}
                 </span>
                 <div class="muted">{{ row.modelUsed }}</div>
+                <div class="muted" *ngIf="row.promptVersion">Prompt: {{ row.promptVersion }}</div>
               </td>
               <td>
                 <ng-container *ngIf="row.totalTokens != null; else noTokens">

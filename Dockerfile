@@ -13,6 +13,7 @@ RUN dotnet restore ./src/PatientManagement.Api/PatientManagement.Api.csproj
 
 # Copy the rest of the source code
 COPY src/ ./src/
+COPY prompts/ ./prompts/
 
 # Build and Publish
 WORKDIR /app/src/PatientManagement.Api

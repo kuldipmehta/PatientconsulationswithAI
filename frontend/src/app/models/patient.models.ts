@@ -201,6 +201,7 @@ export interface AiInteractionLog {
   toolCallsJson?: string | null;
   responseSummary: string;
   modelUsed: string;
+  promptVersion?: string | null;
   isSimulated: boolean;
   durationMs: number;
   latencyMs?: number;

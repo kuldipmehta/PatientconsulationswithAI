@@ -54,6 +54,7 @@ public class AuditService : IAuditService
                 ToolCallsJson = a.ToolCallsJson,
                 ResponseSummary = a.ResponseSummary,
                 ModelUsed = a.ModelUsed,
+                PromptVersion = a.PromptVersion,
                 IsSimulated = a.IsSimulated,
                 DurationMs = a.DurationMs,
                 LatencyMs = a.LatencyMs,

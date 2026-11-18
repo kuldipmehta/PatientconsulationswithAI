@@ -12,6 +12,7 @@ public class AiInteractionLog
     public string? ToolCallsJson { get; set; }
     public string ResponseSummary { get; set; } = string.Empty;
     public string ModelUsed { get; set; } = string.Empty;
+    public string? PromptVersion { get; set; }
     public bool IsSimulated { get; set; }
     public long DurationMs { get; set; }
     public long LatencyMs { get; set; }
