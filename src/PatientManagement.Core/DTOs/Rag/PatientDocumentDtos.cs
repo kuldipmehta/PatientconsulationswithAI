@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.Http;
+
 namespace PatientManagement.Core.DTOs.Rag;
 
 public class PatientDocumentResponseDto
@@ -17,6 +19,7 @@ public class PatientDocumentResponseDto
 
 public class UploadPatientDocumentDto
 {
+    public IFormFile? File { get; set; }
     public string DocumentType { get; set; } = "General";
     public int? ConsultationId { get; set; }
     public string? Summary { get; set; }

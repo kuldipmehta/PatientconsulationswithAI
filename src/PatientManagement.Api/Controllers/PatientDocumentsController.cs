@@ -26,11 +26,15 @@ public class PatientDocumentsController : ControllerBase
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> UploadDocument(
         [FromRoute] int patientId,
-        [FromForm] IFormFile file,
         [FromForm] UploadPatientDocumentDto dto,
         CancellationToken cancellationToken)
     {
-        var doc = await _ragService.UploadAndIndexDocumentAsync(patientId, file, dto, cancellationToken);
+        if (dto.File == null || dto.File.Length == 0)
+        {
+            return BadRequest(ApiResponse<object>.Fail("A valid non-empty file must be provided."));
+        }
+
+        var doc = await _ragService.UploadAndIndexDocumentAsync(patientId, dto.File, dto, cancellationToken);
         return StatusCode(StatusCodes.Status201Created, ApiResponse<PatientDocumentResponseDto>.Ok(doc, "Document uploaded and indexed successfully into RAG vector store."));
     }
 
