@@ -86,6 +86,9 @@ namespace PatientManagement.Infrastructure.Data.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
 
+                    b.Property<int?>("CompletionTokens")
+                        .HasColumnType("int");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime2");
 
@@ -97,8 +100,15 @@ namespace PatientManagement.Infrastructure.Data.Migrations
                         .HasMaxLength(120)
                         .HasColumnType("nvarchar(120)");
 
+                    b.Property<decimal?>("EstimatedCostUsd")
+                        .HasPrecision(18, 8)
+                        .HasColumnType("decimal(18,8)");
+
                     b.Property<bool>("IsSimulated")
                         .HasColumnType("bit");
+
+                    b.Property<long>("LatencyMs")
+                        .HasColumnType("bigint");
 
                     b.Property<string>("ModelUsed")
                         .IsRequired()
@@ -106,6 +116,9 @@ namespace PatientManagement.Infrastructure.Data.Migrations
                         .HasColumnType("nvarchar(80)");
 
                     b.Property<int?>("PatientId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("PromptTokens")
                         .HasColumnType("int");
 
                     b.Property<string>("ResponseSummary")
@@ -118,6 +131,9 @@ namespace PatientManagement.Infrastructure.Data.Migrations
 
                     b.Property<string>("ToolCallsJson")
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<int?>("TotalTokens")
+                        .HasColumnType("int");
 
                     b.Property<string>("UserEmail")
                         .IsRequired()

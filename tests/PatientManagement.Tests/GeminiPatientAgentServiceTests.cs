@@ -844,6 +844,179 @@ public class GeminiPatientAgentServiceTests : IDisposable
         capturedRequests[2].RequestUri!.ToString().Should().EndWith("/models/gemini-2.5-pro:generateContent");
     }
 
+    [Fact]
+    public async Task ChatAsync_WithMultiTurnToolLoopUsageMetadata_SumsAllTurnsAndComputesCost()
+    {
+        // Arrange
+        _patientServiceMock
+            .Setup(s => s.GetPatientsAsync(It.IsAny<PatientFilterParams>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PagedResult<PatientSummaryDto>(
+                new List<PatientSummaryDto> { new() { Id = 1, FirstName = "Eleanor", LastName = "Vance", Age = 34, Gender = "Female" } },
+                1, 1, 10));
+
+        int callCount = 0;
+        var handler = new StubHttpMessageHandler((_, _) =>
+        {
+            callCount++;
+            var json = callCount == 1
+                ? JsonSerializer.Serialize(new
+                {
+                    candidates = new[]
+                    {
+                        new
+                        {
+                            content = new
+                            {
+                                parts = new[]
+                                {
+                                    new { functionCall = new { id = "call_1", name = "search_patients", args = new { searchTerm = "Eleanor" } } }
+                                }
+                            }
+                        }
+                    },
+                    usageMetadata = new
+                    {
+                        promptTokenCount = 1000,
+                        candidatesTokenCount = 200,
+                        totalTokenCount = 1200
+                    }
+                })
+                : JsonSerializer.Serialize(new
+                {
+                    candidates = new[]
+                    {
+                        new { content = new { parts = new[] { new { text = "Found Patient #1 (34y Female)." } } } }
+                    },
+                    usageMetadata = new
+                    {
+                        promptTokenCount = 1500,
+                        candidatesTokenCount = 300,
+                        totalTokenCount = 1800
+                    }
+                });
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            });
+        });
+
+        var liveConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "Gemini:ApiKey", "test-usage-key" },
+                { "Gemini:Model", "gemini-2.5-flash" },
+                { "Gemini:AllowedModels:0", "gemini-2.5-flash" },
+                { "Pricing:gemini-2.5-flash:InputPerMillion", "0.30" },
+                { "Pricing:gemini-2.5-flash:OutputPerMillion", "2.50" }
+            })
+            .Build();
+
+        var liveAgent = new GeminiPatientAgentService(
+            new HttpClient(handler),
+            _dbContext,
+            liveConfig,
+            _patientServiceMock.Object,
+            _consultationServiceMock.Object,
+            _doctorServiceMock.Object,
+            _loggerMock.Object);
+
+        // Act
+        await liveAgent.ChatAsync(new AiChatRequestDto { Message = "Search for Eleanor", Model = "gemini-2.5-flash" });
+
+        // Assert: Both turns summed: prompt = 2500, completion = 500, total = 3000
+        // Cost = (2500 / 1_000_000 * 0.30) + (500 / 1_000_000 * 2.50) = 0.00075 + 0.00125 = 0.002
+        callCount.Should().Be(2);
+        var log = await _dbContext.AiInteractionLogs.OrderByDescending(l => l.Id).FirstAsync();
+        log.ModelUsed.Should().Be("gemini-2.5-flash");
+        log.PromptTokens.Should().Be(2500);
+        log.CompletionTokens.Should().Be(500);
+        log.TotalTokens.Should().Be(3000);
+        log.LatencyMs.Should().BeGreaterThanOrEqualTo(0);
+        log.LatencyMs.Should().Be(log.DurationMs);
+        log.EstimatedCostUsd.Should().Be(0.00200000m);
+    }
+
+    [Fact]
+    public async Task SummarizePatientLiveAsync_WithUnpricedModel_SavesTokensAndNullCostWithoutCrashing()
+    {
+        // Arrange
+        _patientServiceMock
+            .Setup(s => s.GetPatientByIdAsync(12, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PatientResponseDto { Id = 12, FirstName = "Jane", LastName = "Doe", Age = 45, Gender = "Female" });
+
+        var handler = new StubHttpMessageHandler((_, _) =>
+        {
+            var json = JsonSerializer.Serialize(new
+            {
+                candidates = new[]
+                {
+                    new
+                    {
+                        content = new
+                        {
+                            parts = new[]
+                            {
+                                new
+                                {
+                                    text = JsonSerializer.Serialize(new
+                                    {
+                                        summary = "Routine summary for Patient #12.",
+                                        identifiedRisks = new[] { "None" },
+                                        recommendedActions = new[] { "Annual checkup" },
+                                        urgencyAssessment = "Routine"
+                                    })
+                                }
+                            }
+                        }
+                    }
+                },
+                usageMetadata = new
+                {
+                    promptTokenCount = 800,
+                    candidatesTokenCount = 150,
+                    totalTokenCount = 950
+                }
+            });
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            });
+        });
+
+        var liveConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                { "Gemini:ApiKey", "test-usage-key" },
+                { "Gemini:Model", "gemini-unknown-unpriced" },
+                { "Gemini:AllowedModels:0", "gemini-unknown-unpriced" }
+                // Intentionally no Pricing:gemini-unknown-unpriced entry
+            })
+            .Build();
+
+        var liveAgent = new GeminiPatientAgentService(
+            new HttpClient(handler),
+            _dbContext,
+            liveConfig,
+            _patientServiceMock.Object,
+            _consultationServiceMock.Object,
+            _doctorServiceMock.Object,
+            _loggerMock.Object);
+
+        // Act
+        var summary = await liveAgent.SummarizePatientLiveAsync(12, explicitModel: "gemini-unknown-unpriced");
+
+        // Assert: Succeeds without crashing, saves token totals, and EstimatedCostUsd is null
+        summary.ModelUsed.Should().Be("gemini-unknown-unpriced");
+        var log = await _dbContext.AiInteractionLogs.OrderByDescending(l => l.Id).FirstAsync();
+        log.ModelUsed.Should().Be("gemini-unknown-unpriced");
+        log.PromptTokens.Should().Be(800);
+        log.CompletionTokens.Should().Be(150);
+        log.TotalTokens.Should().Be(950);
+        log.EstimatedCostUsd.Should().BeNull();
+    }
+
     public void Dispose()
     {
         _dbContext.Database.EnsureDeleted();

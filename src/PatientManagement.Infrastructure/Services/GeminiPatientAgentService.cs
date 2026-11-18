@@ -24,6 +24,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
 {
     private readonly HttpClient _httpClient;
     private readonly ApplicationDbContext _dbContext;
+    private readonly IConfiguration _configuration;
     private readonly IPatientService _patientService;
     private readonly IConsultationService _consultationService;
     private readonly IDoctorService _doctorService;
@@ -64,6 +65,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
     {
         _httpClient = httpClient;
         _dbContext = dbContext;
+        _configuration = configuration;
         _patientService = patientService;
         _consultationService = consultationService;
         _doctorService = doctorService;
@@ -231,6 +233,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             return simFallback;
         }
 
+        var usage = ExtractUsageMetadata(rawJson);
         var text = ExtractGeminiText(rawJson);
 
         var result = new LivePatientSummaryResponseDto
@@ -261,7 +264,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             result.AiGeneratedSummary = text;
         }
 
-        await LogAiInteractionAsync("live-summary", patientId, prompt, null, result.AiGeneratedSummary, usedModel, false, sw.ElapsedMilliseconds, cancellationToken);
+        await LogAiInteractionAsync("live-summary", patientId, prompt, null, result.AiGeneratedSummary, usedModel, false, sw.ElapsedMilliseconds, cancellationToken, usage);
         return result;
     }
 
@@ -356,6 +359,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             return simFallback;
         }
 
+        var usage = ExtractUsageMetadata(rawJson);
         var text = ExtractGeminiText(rawJson);
 
         var triage = new AiTriageResponseDto { IsSimulatedMode = false, AnalyzedAtUtc = DateTime.UtcNow };
@@ -375,7 +379,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             triage.TriageNotes = text;
         }
 
-        await LogAiInteractionAsync("triage", null, sanitizedPrompt, null, triage.TriageNotes, usedModel, false, sw.ElapsedMilliseconds, cancellationToken);
+        await LogAiInteractionAsync("triage", null, sanitizedPrompt, null, triage.TriageNotes, usedModel, false, sw.ElapsedMilliseconds, cancellationToken, usage);
         return triage;
     }
 
@@ -447,6 +451,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         }
 
         string reply;
+        TokenUsage? usage = null;
         bool isSimulated = !HasLiveApiKey;
         if (isSimulated)
         {
@@ -457,7 +462,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         {
             try
             {
-                (reply, modelToUse) = await RunLiveGeminiChatWithToolsAsync(session, request, modelToUse, toolsExecuted, pendingProposals, cancellationToken);
+                (reply, modelToUse, usage) = await RunLiveGeminiChatWithToolsAsync(session, request, modelToUse, toolsExecuted, pendingProposals, cancellationToken);
             }
             catch (GeminiUpstreamUnavailableException ex)
             {
@@ -481,7 +486,8 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             modelToUse,
             isSimulated,
             sw.ElapsedMilliseconds,
-            cancellationToken);
+            cancellationToken,
+            usage);
 
         return new AiChatResponseDto
         {
@@ -616,7 +622,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
 
     // ==================== PRIVATE HELPERS ====================
 
-    private async Task<(string Reply, string ModelUsed)> RunLiveGeminiChatWithToolsAsync(
+    private async Task<(string Reply, string ModelUsed, TokenUsage Usage)> RunLiveGeminiChatWithToolsAsync(
         AiChatSession session,
         AiChatRequestDto request,
         string modelToUse,
@@ -680,6 +686,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
 
         var tools = BuildLeastPrivilegeToolDeclarations();
         var effectiveModel = modelToUse;
+        var cumulativeUsage = new TokenUsage();
 
         for (int turn = 0; turn < 4; turn++)
         {
@@ -696,6 +703,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
 
             var (raw, usedModel) = await PostGenerateContentWithFallbackAsync(effectiveModel, payload, cancellationToken);
             effectiveModel = usedModel;
+            cumulativeUsage.AddFrom(ExtractUsageMetadata(raw));
 
             using var doc = JsonDocument.Parse(raw);
             var candidate = doc.RootElement.GetProperty("candidates")[0];
@@ -708,7 +716,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
                 var replyText = string.Join("\n", parts.EnumerateArray()
                     .Where(p => p.TryGetProperty("text", out _))
                     .Select(p => p.GetProperty("text").GetString()));
-                return (replyText, effectiveModel);
+                return (replyText, effectiveModel, cumulativeUsage);
             }
 
             contents.Add(JsonNode.Parse(content.GetRawText()));
@@ -742,7 +750,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             contents.Add(new JsonObject { ["role"] = "user", ["parts"] = toolResponses });
         }
 
-        return ("Tool execution completed. Please review the proposed actions or clinical findings above.", effectiveModel);
+        return ("Tool execution completed. Please review the proposed actions or clinical findings above.", effectiveModel, cumulativeUsage);
     }
 
     private async Task<object> ExecuteSafeToolAsync(
@@ -1228,10 +1236,12 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         string modelUsed,
         bool isSimulated,
         long durationMs,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TokenUsage? usage = null)
     {
         try
         {
+            var hasUsage = usage is { HasData: true };
             _dbContext.AiInteractionLogs.Add(new AiInteractionLog
             {
                 UserId = _currentUser?.UserId,
@@ -1245,6 +1255,11 @@ public class GeminiPatientAgentService : IAiPatientAgentService
                 ModelUsed = modelUsed,
                 IsSimulated = isSimulated,
                 DurationMs = durationMs,
+                LatencyMs = durationMs,
+                PromptTokens = hasUsage ? usage!.PromptTokens : null,
+                CompletionTokens = hasUsage ? usage!.CompletionTokens : null,
+                TotalTokens = hasUsage ? usage!.TotalTokens : null,
+                EstimatedCostUsd = hasUsage ? CalculateEstimatedCostUsd(modelUsed, usage) : null,
                 CreatedAtUtc = DateTime.UtcNow
             });
             await _dbContext.SaveChangesAsync(cancellationToken);
@@ -1253,6 +1268,88 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         {
             _logger.LogWarning(ex, "Failed to persist AiInteractionLog.");
         }
+    }
+
+    private sealed class TokenUsage
+    {
+        public int PromptTokens { get; private set; }
+        public int CompletionTokens { get; private set; }
+        public int TotalTokens { get; private set; }
+        public bool HasData { get; private set; }
+
+        public void Add(int promptTokens, int completionTokens, int totalTokens)
+        {
+            PromptTokens += promptTokens;
+            CompletionTokens += completionTokens;
+            TotalTokens += totalTokens;
+            HasData = true;
+        }
+
+        public void AddFrom(TokenUsage? other)
+        {
+            if (other is { HasData: true })
+            {
+                Add(other.PromptTokens, other.CompletionTokens, other.TotalTokens);
+            }
+        }
+    }
+
+    private static TokenUsage? ExtractUsageMetadata(string rawJson)
+    {
+        if (string.IsNullOrWhiteSpace(rawJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawJson);
+            if (!doc.RootElement.TryGetProperty("usageMetadata", out var meta) || meta.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            var prompt = meta.TryGetProperty("promptTokenCount", out var pEl) && pEl.TryGetInt32(out var pVal) ? pVal : 0;
+            var candidates = meta.TryGetProperty("candidatesTokenCount", out var cEl) && cEl.TryGetInt32(out var cVal) ? cVal : 0;
+            var thoughts = meta.TryGetProperty("thoughtsTokenCount", out var thEl) && thEl.TryGetInt32(out var thVal) ? thVal : 0;
+            var completion = candidates + thoughts;
+            var total = meta.TryGetProperty("totalTokenCount", out var tEl) && tEl.TryGetInt32(out var tVal)
+                ? tVal
+                : prompt + completion;
+
+            var usage = new TokenUsage();
+            usage.Add(prompt, completion, total);
+            return usage;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private decimal? CalculateEstimatedCostUsd(string modelUsed, TokenUsage? usage)
+    {
+        if (usage is not { HasData: true } || string.IsNullOrWhiteSpace(modelUsed))
+        {
+            return null;
+        }
+
+        var section = _configuration.GetSection($"Pricing:{modelUsed}");
+        if (!section.Exists())
+        {
+            return null;
+        }
+
+        var inputPerMillion = section.GetValue<decimal?>("InputPerMillion");
+        var outputPerMillion = section.GetValue<decimal?>("OutputPerMillion");
+        if (!inputPerMillion.HasValue || !outputPerMillion.HasValue)
+        {
+            return null;
+        }
+
+        var inputCost = (usage.PromptTokens / 1_000_000m) * inputPerMillion.Value;
+        var outputCost = (usage.CompletionTokens / 1_000_000m) * outputPerMillion.Value;
+        return Math.Round(inputCost + outputCost, 8, MidpointRounding.AwayFromZero);
     }
 
     private static LivePatientSummaryResponseDto BuildSimulatedLiveSummary(

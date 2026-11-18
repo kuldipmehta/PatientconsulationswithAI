@@ -27,5 +27,10 @@ public class AiInteractionLogDto
     public string ModelUsed { get; set; } = string.Empty;
     public bool IsSimulated { get; set; }
     public long DurationMs { get; set; }
+    public long LatencyMs { get; set; }
+    public int? PromptTokens { get; set; }
+    public int? CompletionTokens { get; set; }
+    public int? TotalTokens { get; set; }
+    public decimal? EstimatedCostUsd { get; set; }
     public DateTime CreatedAtUtc { get; set; }
 }

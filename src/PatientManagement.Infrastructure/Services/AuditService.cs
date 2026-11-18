@@ -55,6 +55,11 @@ public class AuditService : IAuditService
                 ModelUsed = a.ModelUsed,
                 IsSimulated = a.IsSimulated,
                 DurationMs = a.DurationMs,
+                LatencyMs = a.LatencyMs,
+                PromptTokens = a.PromptTokens,
+                CompletionTokens = a.CompletionTokens,
+                TotalTokens = a.TotalTokens,
+                EstimatedCostUsd = a.EstimatedCostUsd,
                 CreatedAtUtc = a.CreatedAtUtc
             })
             .ToListAsync(cancellationToken);
