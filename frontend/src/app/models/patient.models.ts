@@ -211,6 +211,29 @@ export interface AiInteractionLog {
   createdAtUtc: string;
 }
 
+export interface AiUsageDailyModelRow {
+  dayUtc: string;
+  modelUsed: string;
+  requests: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  estimatedCostUsd: number;
+  p95LatencyMs: number;
+}
+
+export interface AiUsageSummary {
+  fromUtc?: string | null;
+  toUtc?: string | null;
+  totalRequests: number;
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  totalTokens: number;
+  totalEstimatedCostUsd: number;
+  overallP95LatencyMs: number;
+  breakdown: AiUsageDailyModelRow[];
+}
+
 export interface PendingActionProposal {
   actionId: string;
   actionType: string;

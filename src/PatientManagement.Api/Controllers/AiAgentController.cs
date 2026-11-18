@@ -18,11 +18,16 @@ namespace PatientManagement.Api.Controllers;
 public class AiAgentController : ControllerBase
 {
     private readonly IAiPatientAgentService _aiAgentService;
+    private readonly IAuditService _auditService;
     private readonly IConfiguration _configuration;
 
-    public AiAgentController(IAiPatientAgentService aiAgentService, IConfiguration configuration)
+    public AiAgentController(
+        IAiPatientAgentService aiAgentService,
+        IAuditService auditService,
+        IConfiguration configuration)
     {
         _aiAgentService = aiAgentService;
+        _auditService = auditService;
         _configuration = configuration;
     }
 
@@ -145,5 +150,18 @@ public class AiAgentController : ControllerBase
     {
         var triageResult = await _aiAgentService.TriageSymptomsAsync(request, model, cancellationToken);
         return Ok(ApiResponse<AiTriageResponseDto>.Ok(triageResult, "Symptom triage completed"));
+    }
+
+    [HttpGet("usage")]
+    [Authorize(Roles = "Admin")]
+    [ProducesResponseType(typeof(ApiResponse<AiUsageSummaryDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status403Forbidden)]
+    public async Task<IActionResult> GetUsageSummary(
+        [FromQuery] DateTime? from,
+        [FromQuery] DateTime? to,
+        CancellationToken cancellationToken)
+    {
+        var summary = await _auditService.GetAiUsageSummaryAsync(from, to, cancellationToken);
+        return Ok(ApiResponse<AiUsageSummaryDto>.Ok(summary, "AI usage summary retrieved successfully."));
     }
 }

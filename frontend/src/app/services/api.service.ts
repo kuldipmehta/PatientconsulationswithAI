@@ -8,6 +8,7 @@ import {
   AiSourceCitation,
   AiStatusInfo,
   AiTriageResponse,
+  AiUsageSummary,
   ApiResponse,
   AuditLog,
   Consultation,
@@ -129,6 +130,13 @@ export class ApiService {
     return this.http.get<ApiResponse<AiInteractionLog[]>>(`${this.baseUrl}/audit/ai`, {
       params: new HttpParams().set('take', take)
     });
+  }
+
+  getAiUsageSummary(from?: string, to?: string): Observable<ApiResponse<AiUsageSummary>> {
+    let params = new HttpParams();
+    if (from) params = params.set('from', from);
+    if (to) params = params.set('to', to);
+    return this.http.get<ApiResponse<AiUsageSummary>>(`${this.baseUrl}/ai/usage`, { params });
   }
 
   // ==================== CLINICAL AI AGENT ====================
