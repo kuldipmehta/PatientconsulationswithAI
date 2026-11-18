@@ -75,6 +75,7 @@ import { extractApiErrorMessage } from '../../core/http-error.util';
               <th>Clinician</th>
               <th>Endpoint / Patient</th>
               <th>Model & Mode</th>
+              <th>Tokens & Est. Cost</th>
               <th>Tools / Latency</th>
             </tr>
           </thead>
@@ -90,8 +91,20 @@ import { extractApiErrorMessage } from '../../core/http-error.util';
                 <div class="muted">{{ row.modelUsed }}</div>
               </td>
               <td>
+                <ng-container *ngIf="row.totalTokens != null; else noTokens">
+                  <div><strong>{{ row.totalTokens | number }}</strong> tok</div>
+                  <div class="muted">{{ row.promptTokens ?? 0 | number }} in / {{ row.completionTokens ?? 0 | number }} out</div>
+                  <div class="muted">
+                    Cost: {{ row.estimatedCostUsd != null ? ('$' + (row.estimatedCostUsd | number:'1.6-6')) : 'N/A' }}
+                  </div>
+                </ng-container>
+                <ng-template #noTokens>
+                  <span class="muted">—</span>
+                </ng-template>
+              </td>
+              <td>
                 <div>{{ row.toolCallsJson || 'None' }}</div>
-                <div class="muted">{{ row.durationMs }} ms</div>
+                <div class="muted">{{ row.latencyMs || row.durationMs }} ms</div>
               </td>
             </tr>
           </tbody>

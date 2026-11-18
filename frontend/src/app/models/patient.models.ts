@@ -203,6 +203,11 @@ export interface AiInteractionLog {
   modelUsed: string;
   isSimulated: boolean;
   durationMs: number;
+  latencyMs?: number;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  totalTokens?: number | null;
+  estimatedCostUsd?: number | null;
   createdAtUtc: string;
 }
 
