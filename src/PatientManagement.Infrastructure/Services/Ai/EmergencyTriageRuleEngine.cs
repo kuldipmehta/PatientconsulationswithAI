@@ -53,7 +53,7 @@ public static class EmergencyTriageRuleEngine
             "Self-Harm / Acute Psychiatric Crisis",
             "Emergency Psychiatry",
             new Regex(@"\b(suicid(e|al)|kill myself|end my life|self[- ]harm|overdose)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-            "EMERGENCY ALERT: Call emergency services immediately (911 / 112 / 988 Suicide & Crisis Lifeline) or proceed to the nearest Emergency Department. Do not leave the patient unattended.",
+            "EMERGENCY ALERT: Call emergency services immediately (911 / 112 / 988 Suicide & Crisis Lifeline / Tele-MANAS 14416) or proceed to the nearest Emergency Department. Do not leave the patient unattended.",
             [
                 "Does the patient have an immediate plan or access to lethal means?",
                 "Has any medication or substance already been ingested?",
