@@ -334,6 +334,8 @@ export interface AiChatMessage {
   toolsExecuted?: string[];
   pendingActions?: PendingActionProposal[];
   sourceCitations?: AiSourceCitation[];
+  collaboratingAgents?: string[];
+  pharmacovigilanceWarnings?: string[];
   isSimulatedMode?: boolean;
   simulatedModeNotice?: string | null;
   emergencyRuleTriggered?: boolean;
@@ -346,6 +348,8 @@ export interface AiChatResponse {
   toolsExecuted: string[];
   pendingActions: PendingActionProposal[];
   sourceCitations: AiSourceCitation[];
+  collaboratingAgents?: string[];
+  pharmacovigilanceWarnings?: string[];
   success: boolean;
   isSimulatedMode: boolean;
   simulatedModeNotice?: string | null;

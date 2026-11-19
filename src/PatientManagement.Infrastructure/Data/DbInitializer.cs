@@ -121,6 +121,67 @@ public static class DbInitializer
                     await context.SaveChangesAsync();
                 }
 
+                // Seed multi-agent demo patient Arthur Pendelton if not present
+                if (!await context.Patients.IgnoreQueryFilters().AnyAsync(p => p.Email == "arthur.pendelton@example.com"))
+                {
+                    var arthur = new Patient
+                    {
+                        FirstName = "Arthur",
+                        LastName = "Pendelton",
+                        Email = "arthur.pendelton@example.com",
+                        PhoneNumber = "+1-555-0105",
+                        Age = 64,
+                        Gender = "Male",
+                        DateOfBirth = new DateTime(1962, 8, 14, 0, 0, 0, DateTimeKind.Utc),
+                        Address = "104 Highbury Crescent, Islington",
+                        MedicalNotes = "Atrial fibrillation on oral anticoagulation (Warfarin 5mg daily, target INR 2.0–3.0). Documented severe anaphylactic allergy to penicillin. Stage 1 essential hypertension (Lisinopril 10mg daily). Avoid all NSAIDs due to major GI hemorrhage risk.",
+                        ProfilePictureUrl = "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=400",
+                        PrimaryDoctorId = robertId ?? sarahId,
+                        CreatedAtUtc = DateTime.UtcNow.AddDays(-60)
+                    };
+                    await context.Patients.AddAsync(arthur);
+                    await context.SaveChangesAsync();
+
+                    var arthurConsultations = new List<Consultation>
+                    {
+                        new()
+                        {
+                            PatientId = arthur.Id,
+                            DoctorId = robertId ?? sarahId,
+                            DoctorName = "Dr. Robert Sterling, Cardiologist",
+                            ConsultationDate = DateTime.UtcNow.AddDays(-15),
+                            DurationMinutes = 30,
+                            Diagnosis = "Chronic Atrial Fibrillation & Anticoagulation Review",
+                            Symptoms = "Stable cardiac rhythm; no bleeding or easy bruising.",
+                            Notes = "INR therapeutic at 2.4. Patient reminded: strict contraindication for NSAIDs (Ibuprofen, Naproxen, Aspirin) while taking Warfarin. Paracetamol is the safe analgesic. Anaphylactic allergy to penicillin on file.",
+                            TreatmentPlan = "Continue Warfarin 5mg daily. Re-check INR in 4 weeks.",
+                            Prescription = "Warfarin 5mg PO daily. Lisinopril 10mg PO daily.",
+                            Status = ConsultationStatus.Completed,
+                            Fee = 180.00m,
+                            CreatedAtUtc = DateTime.UtcNow.AddDays(-15)
+                        },
+                        new()
+                        {
+                            PatientId = arthur.Id,
+                            DoctorId = jamesId ?? sarahId,
+                            DoctorName = "Dr. James Wilson, Orthopedic Specialist",
+                            ConsultationDate = DateTime.UtcNow.AddDays(-5),
+                            DurationMinutes = 30,
+                            Diagnosis = "Mild Osteoarthritis Left Knee",
+                            Symptoms = "Morning joint stiffness, mild ache on stairs.",
+                            Notes = "Left knee joint exam shows mild crepitus, no acute effusion. Avoid NSAIDs due to Warfarin therapy. Advised low-impact exercise and oral Paracetamol PRN for pain.",
+                            TreatmentPlan = "Physiotherapy 2x weekly. Avoid NSAIDs.",
+                            Prescription = "Acetaminophen 500mg PO Q6H PRN (max 2g daily).",
+                            Status = ConsultationStatus.Completed,
+                            Fee = 175.00m,
+                            CreatedAtUtc = DateTime.UtcNow.AddDays(-5)
+                        }
+                    };
+                    await context.Consultations.AddRangeAsync(arthurConsultations);
+                    await context.SaveChangesAsync();
+                    logger.LogInformation("Seeded multi-agent clinical test patient Arthur Pendelton with 2 consultations.");
+                }
+
                 logger.LogInformation("Database already seeded.");
                 return;
             }
@@ -188,6 +249,21 @@ public static class DbInitializer
                     ProfilePictureUrl = "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400",
                     PrimaryDoctorId = jamesId,
                     CreatedAtUtc = DateTime.UtcNow.AddDays(-5)
+                },
+                new()
+                {
+                    FirstName = "Arthur",
+                    LastName = "Pendelton",
+                    Email = "arthur.pendelton@example.com",
+                    PhoneNumber = "+1-555-0105",
+                    Age = 64,
+                    Gender = "Male",
+                    DateOfBirth = new DateTime(1962, 8, 14, 0, 0, 0, DateTimeKind.Utc),
+                    Address = "104 Highbury Crescent, Islington",
+                    MedicalNotes = "Atrial fibrillation on oral anticoagulation (Warfarin 5mg daily, target INR 2.0–3.0). Documented severe anaphylactic allergy to penicillin. Stage 1 essential hypertension (Lisinopril 10mg daily). Avoid all NSAIDs due to major GI hemorrhage risk.",
+                    ProfilePictureUrl = "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=400",
+                    PrimaryDoctorId = robertId ?? sarahId,
+                    CreatedAtUtc = DateTime.UtcNow.AddDays(-60)
                 }
             };
 

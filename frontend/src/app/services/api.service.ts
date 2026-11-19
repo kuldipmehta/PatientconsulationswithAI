@@ -38,6 +38,8 @@ export interface SseChatEvent {
     toolsExecuted?: string[];
     pendingActions?: PendingActionProposal[];
     sourceCitations?: AiSourceCitation[];
+    collaboratingAgents?: string[];
+    pharmacovigilanceWarnings?: string[];
     text?: string;
     disclaimer?: string;
   };

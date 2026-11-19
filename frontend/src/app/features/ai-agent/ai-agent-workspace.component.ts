@@ -89,6 +89,20 @@ import {
                 Tools: <span *ngFor="let t of m.toolsExecuted" class="badge badge-secondary">{{ t }}</span>
               </div>
 
+              <div *ngIf="m.collaboratingAgents?.length" class="meta-line swarm-line">
+                <span class="swarm-title">🤖 Specialist Swarm:</span>
+                <span *ngFor="let ag of m.collaboratingAgents" class="badge badge-swarm">
+                  {{ ag }}
+                </span>
+              </div>
+
+              <div *ngIf="m.pharmacovigilanceWarnings?.length" class="pharmacovigilance-card">
+                <div class="pv-title">⚠️ Pharmacovigilance Safety Alerts</div>
+                <ul>
+                  <li *ngFor="let w of m.pharmacovigilanceWarnings">{{ w }}</li>
+                </ul>
+              </div>
+
               <div *ngIf="m.sourceCitations?.length" class="meta-line">
                 Grounding Sources:
                 <span *ngFor="let c of m.sourceCitations" class="badge" [class.badge-primary]="c.sourceType !== 'PatientDocument'" [class.badge-secondary]="c.sourceType === 'PatientDocument'" [title]="c.clinicalSnippet || 'Clinical source citation'">
@@ -116,6 +130,16 @@ import {
                 <span *ngIf="act.status !== 'Pending'" class="badge badge-secondary">{{ act.status }}</span>
               </div>
             </div>
+          </div>
+
+          <div class="quick-prompts-row">
+            <span class="quick-label">⚡ Multi-Agent Scenarios:</span>
+            <button type="button" class="btn-quick-chip" (click)="setQuickPrompt('Patient is taking Warfarin. Can we prescribe Ibuprofen 400mg for acute knee swelling and book an orthopedic evaluation?')">
+              💊 Warfarin + NSAID Interaction Swarm
+            </button>
+            <button type="button" class="btn-quick-chip" (click)="setQuickPrompt('Patient has severe penicillin allergy and acute joint pain. Can we prescribe Amoxicillin and schedule a specialist appointment?')">
+              🛡️ Penicillin Allergy + Triage Swarm
+            </button>
           </div>
 
           <form class="chat-input-row" (ngSubmit)="sendChatStream()">
@@ -263,6 +287,16 @@ import {
     .proposal-card { margin-top: 0.75rem; padding: 0.75rem; border-radius: var(--radius-md); background: #f5f3ff; border: 1px solid #c4b5fd; }
     .proposal-title { font-weight: 700; font-size: 0.82rem; color: #5b21b6; margin-bottom: 0.25rem; }
     .proposal-actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+    .swarm-line { align-items: center; margin-top: 0.4rem; }
+    .swarm-title { font-weight: 700; color: #1e3a8a; }
+    .badge-swarm { background: #dbeafe; color: #1d4ed8; font-weight: 600; padding: 0.15rem 0.45rem; border-radius: 9999px; }
+    .pharmacovigilance-card { margin-top: 0.75rem; padding: 0.75rem 1rem; border-radius: var(--radius-md); background: #fef2f2; border: 1.5px solid #f87171; color: #991b1b; font-size: 0.82rem; }
+    .pv-title { font-weight: 800; font-size: 0.84rem; margin-bottom: 0.35rem; color: #b91c1c; }
+    .pharmacovigilance-card ul { margin: 0; padding-left: 1.2rem; }
+    .quick-prompts-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; flex-wrap: wrap; }
+    .quick-label { font-size: 0.78rem; font-weight: 700; color: #6b21a8; }
+    .btn-quick-chip { background: #faf5ff; border: 1px solid #d8b4fe; color: #6b21a8; border-radius: 9999px; padding: 0.25rem 0.65rem; font-size: 0.75rem; font-weight: 600; cursor: pointer; transition: all 0.15s ease; }
+    .btn-quick-chip:hover { background: #f3e8ff; border-color: #c084fc; transform: translateY(-1px); }
     .chat-input-row { display: flex; gap: 0.75rem; }
     .summary-controls { display: grid; grid-template-columns: 1fr 1.2fr auto; gap: 0.75rem; align-items: end; margin-bottom: 1.25rem; }
     @media (max-width: 800px) { .summary-controls { grid-template-columns: 1fr; } }
@@ -350,6 +384,8 @@ export class AiAgentWorkspaceComponent implements OnInit {
           modelMsg.toolsExecuted = evt.data.toolsExecuted;
           modelMsg.pendingActions = evt.data.pendingActions;
           modelMsg.sourceCitations = evt.data.sourceCitations;
+          modelMsg.collaboratingAgents = evt.data.collaboratingAgents;
+          modelMsg.pharmacovigilanceWarnings = evt.data.pharmacovigilanceWarnings;
           modelMsg.isSimulatedMode = evt.data.isSimulatedMode;
           modelMsg.emergencyRuleTriggered = evt.data.emergencyRuleTriggered;
         } else if (evt.type === 'token' && evt.data.text) {
@@ -365,6 +401,10 @@ export class AiAgentWorkspaceComponent implements OnInit {
         this.chatStreaming.set(false);
       }
     });
+  }
+
+  setQuickPrompt(promptText: string): void {
+    this.chatInput = promptText;
   }
 
   confirmProposal(act: PendingActionProposal): void {

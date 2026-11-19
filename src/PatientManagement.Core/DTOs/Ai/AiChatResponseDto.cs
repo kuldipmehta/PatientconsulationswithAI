@@ -46,6 +46,8 @@ public class AiChatResponseDto
     public List<string> ToolsExecuted { get; set; } = new();
     public List<PendingActionProposalDto> PendingActions { get; set; } = new();
     public List<AiSourceCitationDto> SourceCitations { get; set; } = new();
+    public List<string> CollaboratingAgents { get; set; } = new();
+    public List<string> PharmacovigilanceWarnings { get; set; } = new();
     public object? ExtractedData { get; set; }
     public bool Success { get; set; } = true;
     public bool IsSimulatedMode { get; set; }

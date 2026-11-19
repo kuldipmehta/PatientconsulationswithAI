@@ -34,6 +34,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
     private readonly ICurrentUserService? _currentUser;
     private readonly IPatientRagService? _ragService;
     private readonly ISemanticCacheService? _semanticCacheService;
+    private readonly IClinicalSupervisorOrchestrator? _supervisorOrchestrator;
     private readonly string? _configuredApiKey;
     private readonly string _defaultModel;
     private readonly HashSet<string> _allowedModels;
@@ -72,7 +73,8 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         ILogger<GeminiPatientAgentService> logger,
         ICurrentUserService? currentUser = null,
         IPatientRagService? ragService = null,
-        ISemanticCacheService? semanticCacheService = null)
+        ISemanticCacheService? semanticCacheService = null,
+        IClinicalSupervisorOrchestrator? supervisorOrchestrator = null)
     {
         _httpClient = httpClient;
         _dbContext = dbContext;
@@ -84,6 +86,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         _currentUser = currentUser;
         _ragService = ragService;
         _semanticCacheService = semanticCacheService;
+        _supervisorOrchestrator = supervisorOrchestrator;
 
         var rawKey = configuration["Gemini:ApiKey"] ?? Environment.GetEnvironmentVariable("GEMINI_API_KEY");
         _configuredApiKey = string.IsNullOrWhiteSpace(rawKey) || rawKey.Contains("YOUR_GEMINI_API_KEY", StringComparison.OrdinalIgnoreCase)
@@ -550,7 +553,64 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         string reply;
         TokenUsage? usage = null;
         bool isSimulated = !HasLiveApiKey;
-        if (isSimulated)
+        var collaboratingAgents = new List<string>();
+        var pharmacovigilanceWarnings = new List<string>();
+
+        if (_supervisorOrchestrator != null && _supervisorOrchestrator.ShouldOrchestrate(request.Message))
+        {
+            var patientDetail = request.PatientContextId.HasValue
+                ? await _patientService.GetPatientByIdAsync(request.PatientContextId.Value, cancellationToken)
+                : null;
+
+            var ragSnippets = citations.Select(c => c.ClinicalSnippet).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+
+            var orchestration = await _supervisorOrchestrator.CoordinateAsync(
+                request.Message,
+                request.PatientContextId,
+                patientDetail,
+                ragSnippets,
+                cancellationToken);
+
+            reply = orchestration.SynthesizedResponse;
+            collaboratingAgents = orchestration.CollaboratingAgents;
+            pharmacovigilanceWarnings = orchestration.PharmacovigilanceWarnings;
+
+            foreach (var p in orchestration.ProposedActions)
+            {
+                pendingProposals.Add(p);
+                var actionEntity = new PendingAiAction
+                {
+                    ActionId = p.ActionId,
+                    ActionType = p.ActionType,
+                    UserId = _currentUser?.UserId ?? 1,
+                    PatientId = p.PatientId,
+                    DoctorId = p.DoctorId,
+                    PayloadJson = JsonSerializer.Serialize(new
+                    {
+                        patientId = p.PatientId,
+                        doctorId = p.DoctorId,
+                        doctorName = p.DoctorName,
+                        consultationDate = p.ProposedDateUtc,
+                        diagnosis = p.DiagnosisOrReason,
+                        durationMinutes = p.DurationMinutes
+                    }),
+                    Summary = p.ConfirmationPrompt,
+                    Status = "Pending",
+                    ExpiresAtUtc = p.ExpiresAtUtc,
+                    CreatedAtUtc = DateTime.UtcNow
+                };
+                _dbContext.PendingAiActions.Add(actionEntity);
+            }
+            if (orchestration.ProposedActions.Count > 0)
+            {
+                await _dbContext.SaveChangesAsync(cancellationToken);
+            }
+
+            modelToUse = "specialist-agent-swarm";
+            usage = new TokenUsage(120, 350, 470);
+            toolsExecuted.Add("multi_agent_swarm_orchestration");
+        }
+        else if (isSimulated)
         {
             reply = await RunSimulatedChatAsync(request, toolsExecuted, pendingProposals, cancellationToken);
             modelToUse = "local-simulated";
@@ -608,6 +668,8 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             ToolsExecuted = toolsExecuted,
             PendingActions = pendingProposals,
             SourceCitations = citations,
+            CollaboratingAgents = collaboratingAgents,
+            PharmacovigilanceWarnings = pharmacovigilanceWarnings,
             IsSimulatedMode = isSimulated,
             ModelUsed = modelToUse,
             Timestamp = DateTime.UtcNow
@@ -640,7 +702,9 @@ public class GeminiPatientAgentService : IAiPatientAgentService
                 simulatedModeNotice = simulated.SimulatedModeNotice,
                 toolsExecuted = simulated.ToolsExecuted,
                 pendingActions = simulated.PendingActions,
-                sourceCitations = simulated.SourceCitations
+                sourceCitations = simulated.SourceCitations,
+                collaboratingAgents = simulated.CollaboratingAgents,
+                pharmacovigilanceWarnings = simulated.PharmacovigilanceWarnings
             });
 
             foreach (var chunk in simulated.Reply.Chunk(24))
@@ -664,7 +728,9 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             modelUsed = fullResponse.ModelUsed,
             toolsExecuted = fullResponse.ToolsExecuted,
             pendingActions = fullResponse.PendingActions,
-            sourceCitations = fullResponse.SourceCitations
+            sourceCitations = fullResponse.SourceCitations,
+            collaboratingAgents = fullResponse.CollaboratingAgents,
+            pharmacovigilanceWarnings = fullResponse.PharmacovigilanceWarnings
         });
 
         foreach (var chunk in fullResponse.Reply.Chunk(32))

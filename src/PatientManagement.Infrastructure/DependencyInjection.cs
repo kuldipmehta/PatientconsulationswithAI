@@ -7,6 +7,7 @@ using PatientManagement.Core.Interfaces;
 using PatientManagement.Infrastructure.Data;
 using PatientManagement.Infrastructure.Services;
 using PatientManagement.Infrastructure.Services.Ai;
+using PatientManagement.Infrastructure.Services.Ai.Agents;
 using PatientManagement.Infrastructure.Services.Rag;
 using PatientManagement.Infrastructure.Validation;
 
@@ -45,6 +46,12 @@ public static class DependencyInjection
         services.AddSingleton<IRagContextCompressor, ClinicalContextCompressor>();
         services.AddSingleton<IRagRerankerService, CrossEncoderRerankerService>();
         services.AddSingleton<ISemanticCacheService, MemorySemanticCacheService>();
+
+        // Multi-Agent Clinical Specialist Swarm
+        services.AddSingleton<ISpecialistAgent, PharmacovigilanceAgent>();
+        services.AddSingleton<ISpecialistAgent, DiagnosticTriageAgent>();
+        services.AddSingleton<ISpecialistAgent, SchedulingSpecialistAgent>();
+        services.AddSingleton<IClinicalSupervisorOrchestrator, ClinicalSupervisorOrchestrator>();
 
         services.AddHttpClient<ITextEmbeddingService, GeminiTextEmbeddingService>(client =>
         {
