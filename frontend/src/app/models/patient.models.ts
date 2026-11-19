@@ -261,6 +261,8 @@ export interface AiSourceCitation {
   documentName?: string | null;
   chunkIndex?: number | null;
   similarityScore?: number | null;
+  relevanceScore?: number | null;
+  isCompressed?: boolean;
 }
 
 export interface PatientDocumentDto {
@@ -292,6 +294,8 @@ export interface RagSearchResultDto {
   sourceLabel: string;
   textContent: string;
   similarityScore: number;
+  relevanceScore?: number | null;
+  isCompressed?: boolean;
   createdAtUtc: string;
 }
 

@@ -93,10 +93,10 @@ import {
                 Grounding Sources:
                 <span *ngFor="let c of m.sourceCitations" class="badge" [class.badge-primary]="c.sourceType !== 'PatientDocument'" [class.badge-secondary]="c.sourceType === 'PatientDocument'" [title]="c.clinicalSnippet || 'Clinical source citation'">
                   <ng-container *ngIf="c.sourceType === 'PatientDocument'">
-                    📄 {{ c.documentName || 'Document' }} <span *ngIf="c.similarityScore">({{ (c.similarityScore * 100).toFixed(0) }}%)</span>
+                    📄 {{ c.documentName || 'Document' }} <span *ngIf="c.relevanceScore != null">(★ {{ (c.relevanceScore * 100).toFixed(0) }}%)</span><span *ngIf="c.relevanceScore == null && c.similarityScore">({{ (c.similarityScore * 100).toFixed(0) }}%)</span><span *ngIf="c.isCompressed"> ⚡</span>
                   </ng-container>
                   <ng-container *ngIf="c.sourceType !== 'PatientDocument'">
-                    🩺 Visit #{{ c.consultationId }} ({{ c.consultationDate | date:'shortDate' }})
+                    🩺 Visit #{{ c.consultationId }} ({{ c.consultationDate | date:'shortDate' }})<span *ngIf="c.relevanceScore != null"> (★ {{ (c.relevanceScore * 100).toFixed(0) }}%)</span><span *ngIf="c.isCompressed"> ⚡</span>
                   </ng-container>
                 </span>
               </div>

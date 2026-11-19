@@ -37,6 +37,9 @@ public class PatientRagService : IPatientRagService
     private readonly ILogger<PatientRagService> _logger;
     private readonly double _minScoreFloor;
     private readonly ISemanticCacheService? _semanticCache;
+    private readonly IRagRerankerService? _reranker;
+    private readonly bool _rerankerEnabled;
+    private readonly int _candidateMultiplier;
 
     public PatientRagService(
         ApplicationDbContext dbContext,
@@ -45,7 +48,8 @@ public class PatientRagService : IPatientRagService
         ICurrentUserService currentUser,
         ILogger<PatientRagService> logger,
         IConfiguration? configuration = null,
-        ISemanticCacheService? semanticCache = null)
+        ISemanticCacheService? semanticCache = null,
+        IRagRerankerService? reranker = null)
     {
         _dbContext = dbContext;
         _blobStorageService = blobStorageService;
@@ -53,8 +57,11 @@ public class PatientRagService : IPatientRagService
         _currentUser = currentUser;
         _logger = logger;
         _semanticCache = semanticCache;
+        _reranker = reranker;
         // Lower bound for relevance. Callers can ask for a stricter minScore but never a looser one.
         _minScoreFloor = configuration?.GetValue("Rag:MinScoreFloor", 0.0) ?? 0.0;
+        _rerankerEnabled = configuration?.GetValue("Rag:Reranker:Enabled", true) ?? true;
+        _candidateMultiplier = configuration?.GetValue("Rag:Reranker:CandidateMultiplier", 3) ?? 3;
     }
 
     public async Task<PatientDocumentResponseDto> UploadAndIndexDocumentAsync(
@@ -334,8 +341,44 @@ public class PatientRagService : IPatientRagService
                 staleEmbeddingChunks, patientId);
         }
 
-        return scored
+        var candidateMultiplier = (_rerankerEnabled && _reranker != null) ? Math.Max(1, _candidateMultiplier) : 1;
+        var candidatePool = scored
             .OrderByDescending(s => s.Score)
+            .Take(topK * candidateMultiplier)
+            .ToList();
+
+        if (_rerankerEnabled && _reranker != null && candidatePool.Count > 0)
+        {
+            var candidates = candidatePool.Select(s => new RerankCandidate(
+                s.Chunk.Id,
+                s.Chunk.TextContent,
+                s.Score,
+                s.Chunk.SourceType,
+                s.Chunk.SourceLabel,
+                s.Chunk.PatientDocumentId,
+                s.Chunk.ConsultationId,
+                s.Chunk.PatientId,
+                s.Chunk.CreatedAtUtc
+            )).ToList();
+
+            var reranked = await _reranker.RerankAsync(query, candidates, topK, cancellationToken);
+            return reranked.Select(r => new RagSearchResultDto
+            {
+                ChunkId = r.ChunkId,
+                PatientId = r.PatientId,
+                DocumentId = r.DocumentId,
+                ConsultationId = r.ConsultationId,
+                SourceType = r.SourceType,
+                SourceLabel = r.SourceLabel,
+                TextContent = r.TextContent,
+                SimilarityScore = Math.Round(r.InitialScore, 4),
+                RelevanceScore = Math.Round(r.RelevanceScore, 4),
+                IsCompressed = r.IsCompressed,
+                CreatedAtUtc = r.CreatedAtUtc
+            }).ToList();
+        }
+
+        return candidatePool
             .Take(topK)
             .Select(s => new RagSearchResultDto
             {
@@ -347,6 +390,8 @@ public class PatientRagService : IPatientRagService
                 SourceLabel = s.Chunk.SourceLabel,
                 TextContent = s.Chunk.TextContent,
                 SimilarityScore = Math.Round(s.Score, 4),
+                RelevanceScore = Math.Round(s.Score, 4),
+                IsCompressed = false,
                 CreatedAtUtc = s.Chunk.CreatedAtUtc
             })
             .ToList();

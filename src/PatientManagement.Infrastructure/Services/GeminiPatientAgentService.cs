@@ -497,7 +497,9 @@ public class GeminiPatientAgentService : IAiPatientAgentService
                             SourceType = m.SourceType,
                             DocumentId = m.DocumentId,
                             DocumentName = m.SourceLabel,
-                            SimilarityScore = m.SimilarityScore
+                            SimilarityScore = m.SimilarityScore,
+                            RelevanceScore = m.RelevanceScore ?? m.SimilarityScore,
+                            IsCompressed = m.IsCompressed
                         });
                     }
                 }
@@ -1009,7 +1011,9 @@ public class GeminiPatientAgentService : IAiPatientAgentService
                                 m.SourceType,
                                 m.SourceLabel,
                                 m.TextContent,
-                                m.SimilarityScore
+                                m.SimilarityScore,
+                                RelevanceScore = m.RelevanceScore ?? m.SimilarityScore,
+                                m.IsCompressed
                             }).ToList()
                         };
                     }

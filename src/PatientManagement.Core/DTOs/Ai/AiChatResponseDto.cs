@@ -35,6 +35,8 @@ public class AiSourceCitationDto
     public string? DocumentName { get; set; }
     public int? ChunkIndex { get; set; }
     public double? SimilarityScore { get; set; }
+    public double? RelevanceScore { get; set; }
+    public bool IsCompressed { get; set; }
 }
 
 public class AiChatResponseDto

@@ -266,7 +266,15 @@ import { Doctor, PagedResult, PatientDetail, PatientDocumentDto, PatientSummary,
                     <span class="badge" [class.badge-primary]="res.sourceType === 'Consultation'" [class.badge-secondary]="res.sourceType !== 'Consultation'">
                       {{ res.sourceLabel }}
                     </span>
-                    <span class="rag-score-badge">{{ (res.similarityScore * 100).toFixed(0) }}% match</span>
+                    <div class="rag-badges-row">
+                      <span *ngIf="res.relevanceScore != null" class="rag-rerank-badge" [title]="'Stage 2 Cross-Encoder Rerank Score: ' + (res.relevanceScore * 100).toFixed(0) + '%'">
+                        ★ {{ (res.relevanceScore * 100).toFixed(0) }}% relevance
+                      </span>
+                      <span *ngIf="res.isCompressed" class="badge-compressed" title="Context compressed: Administrative boilerplate removed, clinical facts preserved">
+                        ⚡ compressed
+                      </span>
+                      <span class="rag-score-badge" title="Stage 1 Bi-Encoder Vector Match">{{ (res.similarityScore * 100).toFixed(0) }}% vector</span>
+                    </div>
                   </div>
                   <p class="rag-snippet">{{ res.textContent }}</p>
                 </div>
@@ -408,7 +416,10 @@ import { Doctor, PagedResult, PatientDetail, PatientDocumentDto, PatientSummary,
     .rag-results { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; }
     .rag-result-card { background: white; border: 1px solid #e9d5ff; border-radius: var(--radius-sm); padding: 0.6rem; font-size: 0.82rem; }
     .rag-result-header { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.35rem; }
-    .rag-score-badge { font-weight: 700; color: #7c3aed; font-size: 0.75rem; background: #ede9fe; padding: 0.15rem 0.4rem; border-radius: 9999px; }
+    .rag-badges-row { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+    .rag-rerank-badge { font-weight: 700; color: #047857; font-size: 0.72rem; background: #d1fae5; padding: 0.15rem 0.45rem; border-radius: 9999px; }
+    .badge-compressed { font-weight: 600; color: #b45309; font-size: 0.7rem; background: #fef3c7; padding: 0.15rem 0.4rem; border-radius: 9999px; }
+    .rag-score-badge { font-weight: 700; color: #7c3aed; font-size: 0.72rem; background: #ede9fe; padding: 0.15rem 0.4rem; border-radius: 9999px; }
     .rag-snippet { margin: 0; color: var(--text-main); font-size: 0.8rem; line-height: 1.35; }
   `]
 })

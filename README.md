@@ -62,7 +62,7 @@ flowchart TD
 - **Prompt Injection Defense & PII Minimization (`PatientAiSanitizer`):** User-written notes/symptoms are delimited inside `<untrusted_clinical_text>` tags; names, emails, phone numbers, and addresses are stripped before calling Gemini; tools execute inside C# authorization checks.
 - **Human-in-the-Loop Confirmation:** Scheduling via `propose_consultation` creates a `PendingAiActions` proposal (`Book Dr. Sarah Jenkins...`) requiring an explicit click to `POST /api/ai/actions/{actionId}/confirm`.
 - **Structured Output, Citations, Streaming & Simulated Banner:** Enforces Gemini `responseSchema` mapped to validated C# contracts (`ClinicalSummaryResult`, `TriageAssessmentResult`) with single-retry validation recovery, returns consultation `#ID` citations, streams responses over SSE (`/api/ai/chat/stream`) with server-side `AiChatSessions`, logs tokens, latency, cost, and prompt version to `AiInteractionLogs`, and displays an explicit **SIMULATED MODE ACTIVE** banner when running without a live server key.
-- **Retrieval-Augmented Generation (RAG):** Clinical PDF/TXT document ingestion via `PdfPig`, text chunking (500-char window, 100-char overlap), 3072-dim vector embeddings with Gemini `gemini-embedding-001` (hash-based pseudo-embeddings are used only when `Rag:AllowPseudoEmbeddings` is enabled, e.g. local development; otherwise indexing fails with HTTP 503 instead of storing meaningless vectors), vectors stored in SQL Server (`PatientDocumentChunks`), scored via brute-force cosine similarity in app memory suited to per-patient scale (no proprietary vector extension required), hybrid whole-word keyword matching, and automatic chat grounding with document & visit citations.
+- **Two-Stage RAG with Cross-Encoder Reranking & Context Compression (`IRagRerankerService`, `IRagContextCompressor`):** Clinical PDF/TXT document ingestion via `PdfPig`, text chunking (500-char window, 100-char overlap), and 3072-dim vector embeddings with Gemini `gemini-embedding-001`. Search operates as a high-precision funnel: **Stage 1 (Bi-Encoder Retrieval)** fetches candidate chunks ($K = 3 \times \text{topK}$) via hybrid vector + keyword matching; **Stage 2 (Cross-Encoder Reranker)** scores query-chunk joint attention, elevating exact clinical answers over high-similarity distractors; **Stage 3 (Clinical Context Compressor)** strips administrative headers, room numbers, and boilerplates to preserve token budgets and eliminate the 'Lost in the Middle' effect. Grounding citations surface reranker confidence and compression state directly in Angular.
 - **Semantic Caching Layer (`ISemanticCacheService`):** Fast-path in-memory vector cache with cosine similarity matching ($\ge 0.93$) and exact string lookup (`MemorySemanticCacheService`). High-confidence paraphrased queries return in $\sim 10$ ms with **\$0.00 cost** and zero tokens consumed. Cache entries are partitioned strictly by patient (`patient:{id}`) and feature scope to prevent cross-patient data leakage, and automatically invalidated whenever patient consultations or clinical documents are created, updated, or re-indexed.
 
 ### 3. Resilience & Scheduling Reliability
@@ -127,7 +127,7 @@ Tested 10 clinical summary cases (`SUM-24`..`SUM-33`) × 3 runs each at temperat
 │   ├── PatientManagement.Infrastructure/  # EF Core 10, Migrations, Auth, AI Safety, Blob & Email Services
 │   └── PatientManagement.Api/             # .NET 10 Controllers, JWT/CORS/RateLimit Middleware, Health Checks
 ├── tests/
-│   └── PatientManagement.Tests/           # 121 xUnit Tests (Unit, Integration, RBAC, Concurrency, Mocked AI, RAG, Semantic Caching, Structured Output, Prompt Versioning & Multi-Model Eval Suite)
+│   └── PatientManagement.Tests/           # 127 xUnit Tests (Unit, Integration, RBAC, Concurrency, Mocked AI, Two-Stage RAG, Semantic Caching, Structured Output, Prompt Versioning & Multi-Model Eval Suite)
 ├── prompts/                               # Versioned system prompts (summary.v1/v2, triage.v1, chat.v1)
 ├── docs/                                  # Evaluation reports (model-comparison.md, summary-temperature-experiment.md)
 ├── frontend/                              # Angular 19 Standalone SPA (Lazy-Loaded Features + Karma Specs)
@@ -207,8 +207,8 @@ Passwords are read from `Seed:AdminPassword`, `Seed:DoctorPassword`, and `Seed:R
 
 ## Testing & Verification
 
-### Backend (.NET 10 — 121 Automated Tests)
-Includes unit tests, InMemory API integration tests (`WebApplicationFactory<Program>`), RBAC & IDOR scoping checks (`401`/`403`), concurrency & double-booking (`409`), upload magic-byte rejection (`400`), Swagger OpenAPI verification, mocked HTTP Gemini tool-calling, token/cost/usage aggregation, structured JSON retry/fallback, prompt versioning, semantic vector caching & scope invalidation, `ILlmClient` (Gemini + Ollama), and a **28-case + multi-model offline AI evaluation suite** (`tests/PatientManagement.Tests/Evaluation/`):
+### Backend (.NET 10 — 127 Automated Tests)
+Includes unit tests, InMemory API integration tests (`WebApplicationFactory<Program>`), RBAC & IDOR scoping checks (`401`/`403`), concurrency & double-booking (`409`), upload magic-byte rejection (`400`), Swagger OpenAPI verification, mocked HTTP Gemini tool-calling, token/cost/usage aggregation, structured JSON retry/fallback, prompt versioning, semantic vector caching & scope invalidation, two-stage RAG cross-encoder reranking & context compression, `ILlmClient` (Gemini + Ollama), and a **28-case + multi-model offline AI evaluation suite** (`tests/PatientManagement.Tests/Evaluation/`):
 
 ```bash
 dotnet test PatientManagement.slnx --collect:"XPlat Code Coverage"

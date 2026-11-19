@@ -42,5 +42,7 @@ public class RagSearchResultDto
     public string SourceLabel { get; set; } = string.Empty;
     public string TextContent { get; set; } = string.Empty;
     public double SimilarityScore { get; set; }
+    public double? RelevanceScore { get; set; }
+    public bool IsCompressed { get; set; }
     public DateTime CreatedAtUtc { get; set; }
 }
