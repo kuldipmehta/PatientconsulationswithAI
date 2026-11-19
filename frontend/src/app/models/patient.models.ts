@@ -311,6 +311,15 @@ export interface AiStatusInfo {
   timestamp: string;
 }
 
+export type ClaimStatus = 'Supported' | 'Contradicted' | 'Ungrounded';
+
+export interface ClinicalClaimVerification {
+  claimText: string;
+  status: ClaimStatus;
+  sourceEvidence?: string | null;
+  explanation?: string | null;
+}
+
 export interface LivePatientSummary {
   patientId: number;
   patientLabel: string;
@@ -321,6 +330,10 @@ export interface LivePatientSummary {
   urgencyAssessment: string;
   sourceCitations: AiSourceCitation[];
   sanitizedClinicalDataUsed?: Record<string, unknown> | null;
+  groundingScore?: number | null;
+  isGrounded?: boolean;
+  wasSelfCorrected?: boolean;
+  verifiedClaims?: ClinicalClaimVerification[];
   isSimulatedMode: boolean;
   simulatedModeNotice?: string | null;
   disclaimer: string;
@@ -336,6 +349,10 @@ export interface AiChatMessage {
   sourceCitations?: AiSourceCitation[];
   collaboratingAgents?: string[];
   pharmacovigilanceWarnings?: string[];
+  groundingScore?: number | null;
+  isGrounded?: boolean;
+  wasSelfCorrected?: boolean;
+  verifiedClaims?: ClinicalClaimVerification[];
   isSimulatedMode?: boolean;
   simulatedModeNotice?: string | null;
   emergencyRuleTriggered?: boolean;
@@ -350,6 +367,10 @@ export interface AiChatResponse {
   sourceCitations: AiSourceCitation[];
   collaboratingAgents?: string[];
   pharmacovigilanceWarnings?: string[];
+  groundingScore?: number | null;
+  isGrounded?: boolean;
+  wasSelfCorrected?: boolean;
+  verifiedClaims?: ClinicalClaimVerification[];
   success: boolean;
   isSimulatedMode: boolean;
   simulatedModeNotice?: string | null;

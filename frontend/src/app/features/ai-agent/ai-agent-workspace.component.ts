@@ -115,6 +115,18 @@ import {
                 </span>
               </div>
 
+              <div *ngIf="m.groundingScore != null" class="meta-line grounding-line">
+                <span *ngIf="m.isGrounded && !m.wasSelfCorrected" class="badge badge-grounded" title="100% of clinical metrics, medications, and findings cross-verified against source patient records">
+                  🛡️ {{ (m.groundingScore * 100).toFixed(0) }}% Grounded (Source-Verified)
+                </span>
+                <span *ngIf="m.wasSelfCorrected" class="badge badge-self-corrected" title="Preliminary response contained ungrounded claims that were detected and purged by the self-correction loop">
+                  ⚡ Self-Corrected (Hallucination Purged)
+                </span>
+                <span *ngIf="!m.isGrounded && !m.wasSelfCorrected" class="badge badge-grounding-warning" title="Response contains ungrounded clinical statements">
+                  ⚠️ {{ (m.groundingScore * 100).toFixed(0) }}% Grounded (Unverified Speculation)
+                </span>
+              </div>
+
               <!-- Human-in-the-loop Confirmation Card -->
               <div *ngFor="let act of m.pendingActions" class="proposal-card">
                 <div class="proposal-title">Proposed Action Requires Confirmation</div>
@@ -139,6 +151,9 @@ import {
             </button>
             <button type="button" class="btn-quick-chip" (click)="setQuickPrompt('Patient has severe penicillin allergy and acute joint pain. Can we prescribe Amoxicillin and schedule a specialist appointment?')">
               🛡️ Penicillin Allergy + Triage Swarm
+            </button>
+            <button type="button" class="btn-quick-chip" (click)="setQuickPrompt('What are patient Arthur Pendelton current medications, documented allergies, and most recent clinical consultation findings?')">
+              🛡️ Test Grounding Verifier
             </button>
           </div>
 
@@ -179,7 +194,15 @@ import {
           <div *ngIf="liveSummary() as s" class="summary-result">
             <div class="summary-header">
               <h3>{{ s.patientLabel }}</h3>
-              <span class="badge badge-warning">Urgency: {{ s.urgencyAssessment }}</span>
+              <div class="summary-badges-group">
+                <span *ngIf="s.groundingScore != null" class="badge" [class.badge-grounded]="s.isGrounded" [class.badge-grounding-warning]="!s.isGrounded" [title]="'Automated Grounding Verifier: ' + (s.groundingScore * 100).toFixed(0) + '% fact-checked'">
+                  🛡️ {{ (s.groundingScore * 100).toFixed(0) }}% Grounded
+                </span>
+                <span *ngIf="s.wasSelfCorrected" class="badge badge-self-corrected" title="Hallucinations detected in preliminary draft were automatically purged">
+                  ⚡ Self-Corrected
+                </span>
+                <span class="badge badge-warning">Urgency: {{ s.urgencyAssessment }}</span>
+              </div>
             </div>
             <p class="summary-body">{{ s.aiGeneratedSummary }}</p>
 
@@ -303,6 +326,11 @@ import {
     .summary-result, .triage-card { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 1.25rem; background: var(--bg-page); margin-top: 1rem; }
     .triage-card.emergency { border: 2px solid #dc2626; background: #fef2f2; }
     .summary-header { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; flex-wrap: wrap; }
+    .summary-badges-group { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+    .grounding-line { align-items: center; margin-top: 0.35rem; }
+    .badge-grounded { background: #dcfce7; color: #15803d; border: 1px solid #86efac; font-weight: 600; }
+    .badge-self-corrected { background: #fef08a; color: #854d0e; border: 1px solid #facc15; font-weight: 600; }
+    .badge-grounding-warning { background: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5; font-weight: 600; }
     .summary-body { margin-bottom: 1rem; }
     .summary-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
     .summary-cols ul { padding-left: 1.25rem; font-size: 0.88rem; }
@@ -386,6 +414,9 @@ export class AiAgentWorkspaceComponent implements OnInit {
           modelMsg.sourceCitations = evt.data.sourceCitations;
           modelMsg.collaboratingAgents = evt.data.collaboratingAgents;
           modelMsg.pharmacovigilanceWarnings = evt.data.pharmacovigilanceWarnings;
+          modelMsg.groundingScore = evt.data.groundingScore;
+          modelMsg.isGrounded = evt.data.isGrounded;
+          modelMsg.wasSelfCorrected = evt.data.wasSelfCorrected;
           modelMsg.isSimulatedMode = evt.data.isSimulatedMode;
           modelMsg.emergencyRuleTriggered = evt.data.emergencyRuleTriggered;
         } else if (evt.type === 'token' && evt.data.text) {

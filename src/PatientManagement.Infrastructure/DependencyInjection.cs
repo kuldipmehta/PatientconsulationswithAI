@@ -53,6 +53,9 @@ public static class DependencyInjection
         services.AddSingleton<ISpecialistAgent, SchedulingSpecialistAgent>();
         services.AddSingleton<IClinicalSupervisorOrchestrator, ClinicalSupervisorOrchestrator>();
 
+        // Grounding Verification & Hallucination Detection
+        services.AddSingleton<IGroundingVerifierService, ClinicalGroundingVerifierService>();
+
         services.AddHttpClient<ITextEmbeddingService, GeminiTextEmbeddingService>(client =>
         {
             client.Timeout = TimeSpan.FromSeconds(60);

@@ -40,6 +40,9 @@ export interface SseChatEvent {
     sourceCitations?: AiSourceCitation[];
     collaboratingAgents?: string[];
     pharmacovigilanceWarnings?: string[];
+    groundingScore?: number | null;
+    isGrounded?: boolean;
+    wasSelfCorrected?: boolean;
     text?: string;
     disclaimer?: string;
   };

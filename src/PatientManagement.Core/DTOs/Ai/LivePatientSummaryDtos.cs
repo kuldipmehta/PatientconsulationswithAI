@@ -23,6 +23,10 @@ public class LivePatientSummaryResponseDto
     public List<string> AiRecommendedActions { get; set; } = new();
     public string UrgencyAssessment { get; set; } = "Routine";
     public List<AiSourceCitationDto> SourceCitations { get; set; } = new();
+    public double? GroundingScore { get; set; }
+    public bool IsGrounded { get; set; } = true;
+    public bool WasSelfCorrected { get; set; }
+    public List<ClinicalClaimVerification> VerifiedClaims { get; set; } = new();
 
     /// <summary>
     /// PII-minimized anonymized clinical data sent to Gemini

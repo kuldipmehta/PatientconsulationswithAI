@@ -35,6 +35,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
     private readonly IPatientRagService? _ragService;
     private readonly ISemanticCacheService? _semanticCacheService;
     private readonly IClinicalSupervisorOrchestrator? _supervisorOrchestrator;
+    private readonly IGroundingVerifierService? _groundingVerifier;
     private readonly string? _configuredApiKey;
     private readonly string _defaultModel;
     private readonly HashSet<string> _allowedModels;
@@ -74,7 +75,8 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         ICurrentUserService? currentUser = null,
         IPatientRagService? ragService = null,
         ISemanticCacheService? semanticCacheService = null,
-        IClinicalSupervisorOrchestrator? supervisorOrchestrator = null)
+        IClinicalSupervisorOrchestrator? supervisorOrchestrator = null,
+        IGroundingVerifierService? groundingVerifier = null)
     {
         _httpClient = httpClient;
         _dbContext = dbContext;
@@ -87,6 +89,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         _ragService = ragService;
         _semanticCacheService = semanticCacheService;
         _supervisorOrchestrator = supervisorOrchestrator;
+        _groundingVerifier = groundingVerifier;
 
         var rawKey = configuration["Gemini:ApiKey"] ?? Environment.GetEnvironmentVariable("GEMINI_API_KEY");
         _configuredApiKey = string.IsNullOrWhiteSpace(rawKey) || rawKey.Contains("YOUR_GEMINI_API_KEY", StringComparison.OrdinalIgnoreCase)
@@ -222,7 +225,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
                         {
                             PatientId = patient.Id,
                             PatientLabel = $"Patient #{patient.Id} ({patient.Age}y {patient.Gender})",
-                            TotalConsultationsFetchedFromDb = patient.Consultations.Count,
+                            TotalConsultationsFetchedFromDb = patient.Consultations?.Count ?? 0,
                             AiGeneratedSummary = cachedObj.Summary.Trim(),
                             AiIdentifiedRisks = cachedObj.IdentifiedRisks?.Select(x => x.Trim()).Where(x => !string.IsNullOrWhiteSpace(x)).ToList() ?? new List<string>(),
                             AiRecommendedActions = cachedObj.RecommendedActions?.Select(x => x.Trim()).Where(x => !string.IsNullOrWhiteSpace(x)).ToList() ?? new List<string>(),
@@ -293,17 +296,82 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         }
 
         var summaryData = structured.Result;
+
+        var sourceTexts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(patient.MedicalNotes)) sourceTexts.Add(patient.MedicalNotes);
+        if (patient.Consultations != null)
+        {
+            foreach (var c in patient.Consultations)
+            {
+                sourceTexts.Add($"Consultation #{c.Id}: Diagnosis: {c.Diagnosis}. Symptoms: {c.Symptoms}. Notes: {c.Notes}. Prescription: {c.Prescription}.");
+            }
+        }
+        foreach (var ch in chunks) sourceTexts.Add(ch.TextContent);
+
+        double? groundingScore = null;
+        bool isGrounded = true;
+        bool wasSelfCorrected = false;
+        var verifiedClaims = new List<ClinicalClaimVerification>();
+
+        if (_groundingVerifier != null)
+        {
+            var check = await _groundingVerifier.VerifyAsync(summaryData.Summary!, sourceTexts, cancellationToken);
+            groundingScore = check.GroundingScore;
+            isGrounded = check.IsGrounded;
+            verifiedClaims = check.Claims;
+
+            if (check.RequiresCorrection && HasLiveApiKey)
+            {
+                _logger.LogWarning("Grounding verifier flagged hallucinations ({Flags}). Executing self-correction loop...",
+                    string.Join("; ", check.HallucinationFlags));
+
+                var critiquePrompt = $"CRITIQUE: The preliminary summary contained ungrounded or contradicted claims:\n" +
+                                     $"{string.Join("\n", check.HallucinationFlags.Select(f => $"- {f}"))}\n" +
+                                     $"Regenerate the clinical summary strictly adhering only to the provided source notes without assuming or extrapolating.";
+
+                try
+                {
+                    var corrected = await ExecuteStructuredGeminiCallWithRetryAsync<ClinicalSummaryResult>(
+                        modelToUse,
+                        systemPrompt + "\n" + critiquePrompt,
+                        prompt,
+                        featureOptions,
+                        schema,
+                        ValidateClinicalSummary,
+                        cancellationToken);
+
+                    if (corrected.Result != null)
+                    {
+                        summaryData = corrected.Result;
+                        wasSelfCorrected = true;
+                        var reCheck = await _groundingVerifier.VerifyAsync(summaryData.Summary!, sourceTexts, cancellationToken);
+                        groundingScore = reCheck.GroundingScore;
+                        isGrounded = reCheck.IsGrounded;
+                        verifiedClaims = reCheck.Claims;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Self-correction regeneration failed; proceeding with initial validated output.");
+                }
+            }
+        }
+
         var result = new LivePatientSummaryResponseDto
         {
             PatientId = patient.Id,
             PatientLabel = $"Patient #{patient.Id} ({patient.Age}y {patient.Gender})",
-            TotalConsultationsFetchedFromDb = patient.Consultations.Count,
+            TotalConsultationsFetchedFromDb = patient.Consultations?.Count ?? 0,
             AiGeneratedSummary = summaryData.Summary!.Trim(),
             AiIdentifiedRisks = summaryData.IdentifiedRisks!.Select(x => x.Trim()).Where(x => !string.IsNullOrWhiteSpace(x)).ToList(),
             AiRecommendedActions = summaryData.RecommendedActions!.Select(x => x.Trim()).Where(x => !string.IsNullOrWhiteSpace(x)).ToList(),
             UrgencyAssessment = summaryData.UrgencyAssessment!.Value.ToString(),
             SourceCitations = citations,
             SanitizedClinicalDataUsed = sanitizedPayload,
+            GroundingScore = groundingScore,
+            IsGrounded = isGrounded,
+            WasSelfCorrected = wasSelfCorrected,
+            VerifiedClaims = verifiedClaims,
             IsSimulatedMode = false,
             ModelUsed = structured.ModelUsed,
             GeneratedAtUtc = DateTime.UtcNow
@@ -633,6 +701,20 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             }
         }
 
+        double? groundingScore = null;
+        bool isGrounded = true;
+        bool wasSelfCorrected = false;
+        var verifiedClaims = new List<ClinicalClaimVerification>();
+
+        if (_groundingVerifier != null && citations.Count > 0 && !string.IsNullOrWhiteSpace(reply))
+        {
+            var sources = citations.Select(c => c.ClinicalSnippet).ToList();
+            var check = await _groundingVerifier.VerifyAsync(reply, sources, cancellationToken);
+            groundingScore = check.GroundingScore;
+            isGrounded = check.IsGrounded;
+            verifiedClaims = check.Claims;
+        }
+
         await AppendSessionMessagesAsync(session, request.Message, reply, cancellationToken);
         await LogAiInteractionAsync(
             "chat",
@@ -670,6 +752,10 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             SourceCitations = citations,
             CollaboratingAgents = collaboratingAgents,
             PharmacovigilanceWarnings = pharmacovigilanceWarnings,
+            GroundingScore = groundingScore,
+            IsGrounded = isGrounded,
+            WasSelfCorrected = wasSelfCorrected,
+            VerifiedClaims = verifiedClaims,
             IsSimulatedMode = isSimulated,
             ModelUsed = modelToUse,
             Timestamp = DateTime.UtcNow
@@ -704,7 +790,10 @@ public class GeminiPatientAgentService : IAiPatientAgentService
                 pendingActions = simulated.PendingActions,
                 sourceCitations = simulated.SourceCitations,
                 collaboratingAgents = simulated.CollaboratingAgents,
-                pharmacovigilanceWarnings = simulated.PharmacovigilanceWarnings
+                pharmacovigilanceWarnings = simulated.PharmacovigilanceWarnings,
+                groundingScore = simulated.GroundingScore,
+                isGrounded = simulated.IsGrounded,
+                wasSelfCorrected = simulated.WasSelfCorrected
             });
 
             foreach (var chunk in simulated.Reply.Chunk(24))
@@ -730,7 +819,10 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             pendingActions = fullResponse.PendingActions,
             sourceCitations = fullResponse.SourceCitations,
             collaboratingAgents = fullResponse.CollaboratingAgents,
-            pharmacovigilanceWarnings = fullResponse.PharmacovigilanceWarnings
+            pharmacovigilanceWarnings = fullResponse.PharmacovigilanceWarnings,
+            groundingScore = fullResponse.GroundingScore,
+            isGrounded = fullResponse.IsGrounded,
+            wasSelfCorrected = fullResponse.WasSelfCorrected
         });
 
         foreach (var chunk in fullResponse.Reply.Chunk(32))
@@ -1773,9 +1865,9 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         {
             PatientId = patient.Id,
             PatientLabel = $"Patient #{patient.Id} ({patient.Age}y {patient.Gender})",
-            TotalConsultationsFetchedFromDb = patient.Consultations.Count,
+            TotalConsultationsFetchedFromDb = patient.Consultations?.Count ?? 0,
             AiGeneratedSummary = latest != null
-                ? $"[Simulated Assessment] Patient #{patient.Id} has {patient.Consultations.Count} consultation(s). Most recent visit on {latest.ConsultationDate:yyyy-MM-dd} with {latest.DoctorName} documented: {latest.Diagnosis} [Consultation #{latest.Id}]."
+                ? $"[Simulated Assessment] Patient #{patient.Id} has {patient.Consultations?.Count ?? 0} consultation(s). Most recent visit on {latest.ConsultationDate:yyyy-MM-dd} with {latest.DoctorName} documented: {latest.Diagnosis} [Consultation #{latest.Id}]."
                 : $"[Simulated Assessment] Patient #{patient.Id} has no consultations recorded yet.",
             AiIdentifiedRisks = string.IsNullOrWhiteSpace(patient.MedicalNotes)
                 ? ["No baseline medical notes recorded."]
@@ -1784,6 +1876,9 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             UrgencyAssessment = "Routine",
             SourceCitations = citations,
             SanitizedClinicalDataUsed = sanitizedPayload,
+            GroundingScore = 1.0,
+            IsGrounded = true,
+            WasSelfCorrected = false,
             IsSimulatedMode = true,
             ModelUsed = "local-simulated",
             GeneratedAtUtc = DateTime.UtcNow
