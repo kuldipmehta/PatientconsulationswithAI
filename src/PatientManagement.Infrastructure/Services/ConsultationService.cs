@@ -15,17 +15,20 @@ public class ConsultationService : IConsultationService
     private readonly ILogger<ConsultationService> _logger;
     private readonly ICurrentUserService? _currentUser;
     private readonly IPatientRagService? _ragService;
+    private readonly ISemanticCacheService? _semanticCache;
 
     public ConsultationService(
         ApplicationDbContext dbContext,
         ILogger<ConsultationService> logger,
         ICurrentUserService? currentUser = null,
-        IPatientRagService? ragService = null)
+        IPatientRagService? ragService = null,
+        ISemanticCacheService? semanticCache = null)
     {
         _dbContext = dbContext;
         _logger = logger;
         _currentUser = currentUser;
         _ragService = ragService;
+        _semanticCache = semanticCache;
     }
 
     public async Task<IEnumerable<ConsultationResponseDto>> GetConsultationsAsync(
@@ -144,6 +147,9 @@ public class ConsultationService : IConsultationService
             }
         }
 
+        _semanticCache?.InvalidateScope($"patient:{consultation.PatientId}");
+        _semanticCache?.InvalidateScope($"patient:{consultation.PatientId}:summary");
+
         consultation.Patient = patient;
         return MapToResponseDto(consultation);
     }
@@ -225,6 +231,9 @@ public class ConsultationService : IConsultationService
             }
         }
 
+        _semanticCache?.InvalidateScope($"patient:{consultation.PatientId}");
+        _semanticCache?.InvalidateScope($"patient:{consultation.PatientId}:summary");
+
         return MapToResponseDto(consultation);
     }
 
@@ -257,6 +266,8 @@ public class ConsultationService : IConsultationService
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _semanticCache?.InvalidateScope($"patient:{consultation.PatientId}");
+        _semanticCache?.InvalidateScope($"patient:{consultation.PatientId}:summary");
         _logger.LogInformation("Soft-deleted consultation #{ConsultationId} and removed {Count} RAG chunks.", id, derivedChunks.Count);
 
         return true;

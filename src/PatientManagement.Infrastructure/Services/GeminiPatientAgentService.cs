@@ -33,6 +33,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
     private readonly ILogger<GeminiPatientAgentService> _logger;
     private readonly ICurrentUserService? _currentUser;
     private readonly IPatientRagService? _ragService;
+    private readonly ISemanticCacheService? _semanticCacheService;
     private readonly string? _configuredApiKey;
     private readonly string _defaultModel;
     private readonly HashSet<string> _allowedModels;
@@ -70,7 +71,8 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         IDoctorService doctorService,
         ILogger<GeminiPatientAgentService> logger,
         ICurrentUserService? currentUser = null,
-        IPatientRagService? ragService = null)
+        IPatientRagService? ragService = null,
+        ISemanticCacheService? semanticCacheService = null)
     {
         _httpClient = httpClient;
         _dbContext = dbContext;
@@ -81,6 +83,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         _logger = logger;
         _currentUser = currentUser;
         _ragService = ragService;
+        _semanticCacheService = semanticCacheService;
 
         var rawKey = configuration["Gemini:ApiKey"] ?? Environment.GetEnvironmentVariable("GEMINI_API_KEY");
         _configuredApiKey = string.IsNullOrWhiteSpace(rawKey) || rawKey.Contains("YOUR_GEMINI_API_KEY", StringComparison.OrdinalIgnoreCase)
@@ -200,6 +203,45 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         }
 
         var prompt = BuildSummaryPrompt(sanitizedPayload, customInstructions);
+        var summaryScope = $"patient:{patientId}:summary";
+
+        if (_semanticCacheService != null)
+        {
+            var cached = await _semanticCacheService.GetAsync(prompt, summaryScope, cancellationToken: cancellationToken);
+            if (cached != null)
+            {
+                try
+                {
+                    var cachedObj = JsonSerializer.Deserialize<ClinicalSummaryResult>(cached.ResponseContent, StrictStructuredJsonOptions);
+                    if (cachedObj?.Summary != null)
+                    {
+                        var cachedResult = new LivePatientSummaryResponseDto
+                        {
+                            PatientId = patient.Id,
+                            PatientLabel = $"Patient #{patient.Id} ({patient.Age}y {patient.Gender})",
+                            TotalConsultationsFetchedFromDb = patient.Consultations.Count,
+                            AiGeneratedSummary = cachedObj.Summary.Trim(),
+                            AiIdentifiedRisks = cachedObj.IdentifiedRisks?.Select(x => x.Trim()).Where(x => !string.IsNullOrWhiteSpace(x)).ToList() ?? new List<string>(),
+                            AiRecommendedActions = cachedObj.RecommendedActions?.Select(x => x.Trim()).Where(x => !string.IsNullOrWhiteSpace(x)).ToList() ?? new List<string>(),
+                            UrgencyAssessment = cachedObj.UrgencyAssessment?.ToString() ?? "Routine",
+                            SourceCitations = citations,
+                            SanitizedClinicalDataUsed = sanitizedPayload,
+                            IsSimulatedMode = false,
+                            ModelUsed = $"{cached.ModelUsed} (cached)",
+                            GeneratedAtUtc = DateTime.UtcNow
+                        };
+
+                        await LogAiInteractionAsync("live-summary", patientId, prompt, null, cachedResult.AiGeneratedSummary, $"{cached.ModelUsed} (cached)", false, sw.ElapsedMilliseconds, cancellationToken, new TokenUsage(0, 0, 0), promptVersion);
+                        return cachedResult;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to deserialize cached clinical summary. Proceeding with live model call.");
+                }
+            }
+        }
+
         var schema = new
         {
             type = "OBJECT",
@@ -265,6 +307,21 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         };
 
         await LogAiInteractionAsync("live-summary", patientId, prompt, null, result.AiGeneratedSummary, structured.ModelUsed, false, sw.ElapsedMilliseconds, cancellationToken, structured.Usage, promptVersion);
+
+        if (_semanticCacheService != null && structured.RawJson != null)
+        {
+            await _semanticCacheService.SetAsync(
+                prompt,
+                structured.RawJson,
+                structured.ModelUsed,
+                summaryScope,
+                promptTokens: structured.Usage?.PromptTokens,
+                completionTokens: structured.Usage?.CompletionTokens,
+                totalTokens: structured.Usage?.TotalTokens,
+                promptVersion: promptVersion,
+                cancellationToken: cancellationToken);
+        }
+
         return result;
     }
 
@@ -454,6 +511,40 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         var chatFeatureOptions = GetFeatureGenerationOptions("Chat", 0.2, 0.9, 2048, "chat.v1");
         var (chatSystemPrompt, chatPromptVersion) = PromptTemplateLoader.Load(chatFeatureOptions.PromptVersion, ClinicalSystemInstruction);
 
+        var cacheScope = request.PatientContextId.HasValue ? $"patient:{request.PatientContextId.Value}" : "global";
+        if (_semanticCacheService != null)
+        {
+            var cached = await _semanticCacheService.GetAsync(request.Message, cacheScope, cancellationToken: cancellationToken);
+            if (cached != null)
+            {
+                await AppendSessionMessagesAsync(session, request.Message, cached.ResponseContent, cancellationToken);
+                await LogAiInteractionAsync(
+                    "chat",
+                    request.PatientContextId,
+                    PatientAiSanitizer.WrapUntrustedText(request.Message),
+                    "[]",
+                    cached.ResponseContent,
+                    $"{cached.ModelUsed} (cached)",
+                    isSimulated: false,
+                    sw.ElapsedMilliseconds,
+                    cancellationToken,
+                    new TokenUsage(0, 0, 0),
+                    promptVersion: cached.PromptVersion ?? chatPromptVersion);
+
+                return new AiChatResponseDto
+                {
+                    SessionId = session.SessionId,
+                    Reply = cached.ResponseContent,
+                    ToolsExecuted = new List<string>(),
+                    PendingActions = new List<PendingActionProposalDto>(),
+                    SourceCitations = citations,
+                    IsSimulatedMode = false,
+                    ModelUsed = $"{cached.ModelUsed} (cached)",
+                    Timestamp = DateTime.UtcNow
+                };
+            }
+        }
+
         string reply;
         TokenUsage? usage = null;
         bool isSimulated = !HasLiveApiKey;
@@ -493,6 +584,20 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             cancellationToken,
             usage,
             chatPromptVersion);
+
+        if (_semanticCacheService != null && !isSimulated && pendingProposals.Count == 0 && !string.IsNullOrWhiteSpace(reply))
+        {
+            await _semanticCacheService.SetAsync(
+                request.Message,
+                reply,
+                modelToUse,
+                cacheScope,
+                promptTokens: usage?.PromptTokens,
+                completionTokens: usage?.CompletionTokens,
+                totalTokens: usage?.TotalTokens,
+                promptVersion: chatPromptVersion,
+                cancellationToken: cancellationToken);
+        }
 
         return new AiChatResponseDto
         {
@@ -1308,6 +1413,13 @@ public class GeminiPatientAgentService : IAiPatientAgentService
 
     private sealed class TokenUsage
     {
+        public TokenUsage() { }
+
+        public TokenUsage(int promptTokens, int completionTokens, int totalTokens)
+        {
+            Add(promptTokens, completionTokens, totalTokens);
+        }
+
         public int PromptTokens { get; private set; }
         public int CompletionTokens { get; private set; }
         public int TotalTokens { get; private set; }
@@ -1370,7 +1482,13 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             return null;
         }
 
-        var section = _configuration.GetSection($"Pricing:{modelUsed}");
+        if (usage.TotalTokens == 0)
+        {
+            return 0.00000000m;
+        }
+
+        var cleanModel = modelUsed.Replace(" (cached)", "", StringComparison.OrdinalIgnoreCase).Trim();
+        var section = _configuration.GetSection($"Pricing:{cleanModel}");
         if (!section.Exists())
         {
             return null;
@@ -1392,7 +1510,8 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         T? Result,
         string ModelUsed,
         TokenUsage Usage,
-        string? ValidationError) where T : class;
+        string? ValidationError,
+        string? RawJson = null) where T : class;
 
     private async Task<StructuredCallResult<T>> ExecuteStructuredGeminiCallWithRetryAsync<T>(
         string modelToUse,
@@ -1438,7 +1557,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             var text = ExtractGeminiText(rawJson);
             if (TryDeserializeAndValidate(text, validator, out var parsed, out var validationError))
             {
-                return new StructuredCallResult<T>(parsed, lastUsedModel, cumulativeUsage, null);
+                return new StructuredCallResult<T>(parsed, lastUsedModel, cumulativeUsage, null, text);
             }
 
             lastError = validationError;

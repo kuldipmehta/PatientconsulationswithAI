@@ -36,6 +36,7 @@ public class PatientRagService : IPatientRagService
     private readonly ICurrentUserService _currentUser;
     private readonly ILogger<PatientRagService> _logger;
     private readonly double _minScoreFloor;
+    private readonly ISemanticCacheService? _semanticCache;
 
     public PatientRagService(
         ApplicationDbContext dbContext,
@@ -43,13 +44,15 @@ public class PatientRagService : IPatientRagService
         ITextEmbeddingService embeddingService,
         ICurrentUserService currentUser,
         ILogger<PatientRagService> logger,
-        IConfiguration? configuration = null)
+        IConfiguration? configuration = null,
+        ISemanticCacheService? semanticCache = null)
     {
         _dbContext = dbContext;
         _blobStorageService = blobStorageService;
         _embeddingService = embeddingService;
         _currentUser = currentUser;
         _logger = logger;
+        _semanticCache = semanticCache;
         // Lower bound for relevance. Callers can ask for a stricter minScore but never a looser one.
         _minScoreFloor = configuration?.GetValue("Rag:MinScoreFloor", 0.0) ?? 0.0;
     }
@@ -176,6 +179,9 @@ public class PatientRagService : IPatientRagService
         _logger.LogInformation(
             "Document #{DocId} '{FileName}' indexed successfully for patient #{PatientId} with {ChunksCount} chunks.",
             document.Id, document.FileName, patientId, chunks.Count);
+
+        _semanticCache?.InvalidateScope($"patient:{patientId}");
+        _semanticCache?.InvalidateScope($"patient:{patientId}:summary");
 
         return MapToResponseDto(document);
     }
@@ -462,6 +468,9 @@ public class PatientRagService : IPatientRagService
             await _dbContext.SaveChangesAsync(cancellationToken);
             _logger.LogInformation("Re-embedded {Count} document chunks for patient #{PatientId}.", documentChunks.Count, patientId);
         }
+
+        _semanticCache?.InvalidateScope($"patient:{patientId}");
+        _semanticCache?.InvalidateScope($"patient:{patientId}:summary");
 
         return indexedCount;
     }

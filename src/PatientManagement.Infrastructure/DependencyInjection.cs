@@ -42,6 +42,7 @@ public static class DependencyInjection
         services.AddScoped<IPatientService, PatientService>();
         services.AddScoped<IConsultationService, ConsultationService>();
         services.AddScoped<IPatientRagService, PatientRagService>();
+        services.AddSingleton<ISemanticCacheService, MemorySemanticCacheService>();
 
         services.AddHttpClient<ITextEmbeddingService, GeminiTextEmbeddingService>(client =>
         {
