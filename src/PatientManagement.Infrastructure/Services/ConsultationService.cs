@@ -177,6 +177,13 @@ public class ConsultationService : IConsultationService
             }
         }
 
+        // Receptionists may reschedule (date, duration, doctor, status, fee) but never see or edit clinical content.
+        var isReceptionist = _currentUser is { IsAuthenticated: true, Role: UserRole.Receptionist };
+        if (!isReceptionist && string.IsNullOrWhiteSpace(dto.Diagnosis))
+        {
+            throw new ArgumentException("Diagnosis is required.");
+        }
+
         var resolvedDoctor = await ResolveDoctorAsync(dto.DoctorId ?? consultation.DoctorId, dto.DoctorName, cancellationToken);
         var doctorId = resolvedDoctor?.Id ?? dto.DoctorId ?? consultation.DoctorId;
         var doctorName = resolvedDoctor?.FullName ?? dto.DoctorName.Trim();
@@ -191,13 +198,17 @@ public class ConsultationService : IConsultationService
         consultation.DoctorName = doctorName;
         consultation.ConsultationDate = dto.ConsultationDate;
         consultation.DurationMinutes = duration;
-        consultation.Diagnosis = dto.Diagnosis.Trim();
-        consultation.Symptoms = dto.Symptoms?.Trim();
-        consultation.Notes = dto.Notes?.Trim();
-        consultation.TreatmentPlan = dto.TreatmentPlan?.Trim();
-        consultation.Prescription = dto.Prescription?.Trim();
         consultation.Status = dto.Status;
         consultation.Fee = dto.Fee;
+
+        if (!isReceptionist)
+        {
+            consultation.Diagnosis = dto.Diagnosis.Trim();
+            consultation.Symptoms = dto.Symptoms?.Trim();
+            consultation.Notes = dto.Notes?.Trim();
+            consultation.TreatmentPlan = dto.TreatmentPlan?.Trim();
+            consultation.Prescription = dto.Prescription?.Trim();
+        }
         consultation.UpdatedAtUtc = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -234,8 +245,19 @@ public class ConsultationService : IConsultationService
         consultation.DeletedAtUtc = DateTime.UtcNow;
         consultation.DeletedByUserId = _currentUser?.UserId;
 
+        // The RAG index holds a copy of the diagnosis, notes and prescription text. Remove it together with
+        // the consultation so deleted clinical content can never be retrieved or shown to the AI again.
+        var derivedChunks = await _dbContext.PatientDocumentChunks
+            .IgnoreQueryFilters()
+            .Where(c => c.ConsultationId == id && c.SourceType == "Consultation")
+            .ToListAsync(cancellationToken);
+        if (derivedChunks.Count > 0)
+        {
+            _dbContext.PatientDocumentChunks.RemoveRange(derivedChunks);
+        }
+
         await _dbContext.SaveChangesAsync(cancellationToken);
-        _logger.LogInformation("Soft-deleted consultation #{ConsultationId}.", id);
+        _logger.LogInformation("Soft-deleted consultation #{ConsultationId} and removed {Count} RAG chunks.", id, derivedChunks.Count);
 
         return true;
     }

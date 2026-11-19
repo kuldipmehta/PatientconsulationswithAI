@@ -289,6 +289,146 @@ public class ConsultationServiceTests : IDisposable
         result.DoctorName.Should().Be(doctorA.FullName);
     }
 
+    [Fact]
+    public async Task DeleteConsultationAsync_RemovesItsRagChunks_ButKeepsOtherChunks()
+    {
+        var patient = new Patient { FirstName = "Rag", LastName = "Cleanup", Email = "ragcleanup@example.com", Age = 40, Gender = "Male", CreatedAtUtc = DateTime.UtcNow };
+        _dbContext.Patients.Add(patient);
+        await _dbContext.SaveChangesAsync();
+
+        var consultation = new Consultation
+        {
+            PatientId = patient.Id,
+            DoctorName = "Dr. House",
+            ConsultationDate = DateTime.UtcNow.AddDays(-1),
+            Diagnosis = "Confidential diagnosis text",
+            Status = ConsultationStatus.Completed
+        };
+        _dbContext.Consultations.Add(consultation);
+        await _dbContext.SaveChangesAsync();
+
+        _dbContext.PatientDocumentChunks.AddRange(
+            new PatientDocumentChunk
+            {
+                PatientId = patient.Id,
+                ConsultationId = consultation.Id,
+                SourceType = "Consultation",
+                SourceLabel = "Consultation chunk",
+                TextContent = "Diagnosis: Confidential diagnosis text",
+                EmbeddingVectorJson = "[0.1,0.2]",
+                EmbeddingDimensions = 2
+            },
+            new PatientDocumentChunk
+            {
+                PatientId = patient.Id,
+                SourceType = "PatientDocument",
+                SourceLabel = "Lab report chunk",
+                TextContent = "SGPT 68 U/L",
+                EmbeddingVectorJson = "[0.3,0.4]",
+                EmbeddingDimensions = 2
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var deleted = await _consultationService.DeleteConsultationAsync(consultation.Id);
+
+        deleted.Should().BeTrue();
+        var remaining = await _dbContext.PatientDocumentChunks.IgnoreQueryFilters().ToListAsync();
+        remaining.Should().ContainSingle();
+        remaining[0].SourceType.Should().Be("PatientDocument");
+    }
+
+    [Fact]
+    public async Task UpdateConsultationAsync_AsReceptionist_ReschedulesButLeavesClinicalFieldsIntact()
+    {
+        var patient = new Patient { FirstName = "Resched", LastName = "Ule", Email = "resched@example.com", Age = 35, Gender = "Female", CreatedAtUtc = DateTime.UtcNow };
+        _dbContext.Patients.Add(patient);
+        await _dbContext.SaveChangesAsync();
+
+        var originalDate = DateTime.UtcNow.AddDays(2);
+        var consultation = new Consultation
+        {
+            PatientId = patient.Id,
+            DoctorName = "Dr. House",
+            ConsultationDate = originalDate,
+            DurationMinutes = 30,
+            Diagnosis = "Type 2 diabetes",
+            Symptoms = "Thirst",
+            Notes = "Confidential clinical note",
+            TreatmentPlan = "Diet and metformin",
+            Prescription = "Metformin 500mg",
+            Status = ConsultationStatus.Scheduled
+        };
+        _dbContext.Consultations.Add(consultation);
+        await _dbContext.SaveChangesAsync();
+
+        var receptionist = new Mock<ICurrentUserService>();
+        receptionist.Setup(u => u.IsAuthenticated).Returns(true);
+        receptionist.Setup(u => u.Role).Returns(UserRole.Receptionist);
+        receptionist.Setup(u => u.UserId).Returns(7);
+        var sut = new ConsultationService(_dbContext, _loggerMock.Object, receptionist.Object);
+
+        var newDate = originalDate.AddDays(3);
+        var result = await sut.UpdateConsultationAsync(consultation.Id, new UpdateConsultationDto
+        {
+            DoctorName = "Dr. House",
+            ConsultationDate = newDate,
+            DurationMinutes = 45,
+            Status = ConsultationStatus.Scheduled,
+            // A receptionist's form sends no clinical content at all
+            Diagnosis = string.Empty,
+            Symptoms = null,
+            Notes = null,
+            TreatmentPlan = null,
+            Prescription = null
+        });
+
+        result.Should().NotBeNull();
+        var stored = await _dbContext.Consultations.AsNoTracking().FirstAsync(c => c.Id == consultation.Id);
+        stored.ConsultationDate.Should().Be(newDate);
+        stored.DurationMinutes.Should().Be(45);
+        stored.Diagnosis.Should().Be("Type 2 diabetes");
+        stored.Symptoms.Should().Be("Thirst");
+        stored.Notes.Should().Be("Confidential clinical note");
+        stored.TreatmentPlan.Should().Be("Diet and metformin");
+        stored.Prescription.Should().Be("Metformin 500mg");
+    }
+
+    [Fact]
+    public async Task UpdateConsultationAsync_AsAdmin_WithEmptyDiagnosis_ThrowsArgumentException()
+    {
+        var patient = new Patient { FirstName = "Empty", LastName = "Diagnosis", Email = "emptydx@example.com", Age = 29, Gender = "Male", CreatedAtUtc = DateTime.UtcNow };
+        _dbContext.Patients.Add(patient);
+        await _dbContext.SaveChangesAsync();
+
+        var consultation = new Consultation
+        {
+            PatientId = patient.Id,
+            DoctorName = "Dr. House",
+            ConsultationDate = DateTime.UtcNow.AddDays(1),
+            Diagnosis = "Original diagnosis",
+            Status = ConsultationStatus.Scheduled
+        };
+        _dbContext.Consultations.Add(consultation);
+        await _dbContext.SaveChangesAsync();
+
+        var admin = new Mock<ICurrentUserService>();
+        admin.Setup(u => u.IsAuthenticated).Returns(true);
+        admin.Setup(u => u.Role).Returns(UserRole.Admin);
+        var sut = new ConsultationService(_dbContext, _loggerMock.Object, admin.Object);
+
+        var act = async () => await sut.UpdateConsultationAsync(consultation.Id, new UpdateConsultationDto
+        {
+            DoctorName = "Dr. House",
+            ConsultationDate = consultation.ConsultationDate,
+            DurationMinutes = 30,
+            Status = ConsultationStatus.Scheduled,
+            Diagnosis = "   "
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*Diagnosis is required*");
+        (await _dbContext.Consultations.AsNoTracking().FirstAsync(c => c.Id == consultation.Id)).Diagnosis.Should().Be("Original diagnosis");
+    }
+
     public void Dispose()
     {
         _dbContext.Database.EnsureDeleted();

@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using PatientManagement.Core.Exceptions;
 using PatientManagement.Core.Interfaces;
 using PatientManagement.Infrastructure.Services.Rag;
 
@@ -19,6 +20,11 @@ public class GeminiTextEmbeddingService : ITextEmbeddingService
     private readonly string? _configuredApiKey;
     private readonly string _baseUrl;
 
+    // Pseudo embeddings are hash-based and NOT semantic. They are only allowed when explicitly enabled
+    // (Development / tests). In every other environment a failed embedding call must fail the request,
+    // otherwise documents get indexed with meaningless vectors and nobody notices.
+    private readonly bool _allowPseudoEmbeddings;
+
     public GeminiTextEmbeddingService(
         HttpClient httpClient,
         IConfiguration configuration,
@@ -28,11 +34,23 @@ public class GeminiTextEmbeddingService : ITextEmbeddingService
         _logger = logger;
         _configuredApiKey = configuration["Gemini:ApiKey"] ?? Environment.GetEnvironmentVariable("GEMINI_API_KEY");
         _baseUrl = (configuration["Gemini:ApiBaseUrl"] ?? configuration["Gemini:BaseUrl"] ?? DefaultBaseUrl).TrimEnd('/');
+        _allowPseudoEmbeddings = configuration.GetValue<bool>("Rag:AllowPseudoEmbeddings");
     }
 
     private bool HasLiveApiKey =>
         !string.IsNullOrWhiteSpace(_configuredApiKey) &&
         !_configuredApiKey.Contains("YOUR_GEMINI_API_KEY", StringComparison.OrdinalIgnoreCase);
+
+    private float[] PseudoOrThrow(string text, string reason, Exception? inner = null)
+    {
+        if (!_allowPseudoEmbeddings)
+        {
+            throw new EmbeddingUnavailableException(reason, inner);
+        }
+
+        _logger.LogWarning("{Reason} Using deterministic pseudo-embedding because Rag:AllowPseudoEmbeddings is enabled.", reason);
+        return VectorOperations.GenerateDeterministicPseudoEmbedding(text, Dimensions);
+    }
 
     public async Task<float[]> GenerateEmbeddingAsync(string text, CancellationToken cancellationToken = default)
     {
@@ -43,7 +61,7 @@ public class GeminiTextEmbeddingService : ITextEmbeddingService
 
         if (!HasLiveApiKey)
         {
-            return VectorOperations.GenerateDeterministicPseudoEmbedding(text, Dimensions);
+            return PseudoOrThrow(text, "Gemini API key is not configured.");
         }
 
         try
@@ -84,14 +102,20 @@ public class GeminiTextEmbeddingService : ITextEmbeddingService
                 }
             }
 
-            _logger.LogWarning("Gemini embedContent returned status {StatusCode}. Falling back to deterministic pseudo-embedding.", response.StatusCode);
+            return PseudoOrThrow(text, $"Gemini embedContent returned status {(int)response.StatusCode}.");
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (EmbeddingUnavailableException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error calling Gemini text-embedding API. Falling back to deterministic pseudo-embedding.");
+            return PseudoOrThrow(text, "Error calling the Gemini embedding API.", ex);
         }
-
-        return VectorOperations.GenerateDeterministicPseudoEmbedding(text, Dimensions);
     }
 
     public async Task<List<float[]>> GenerateBatchEmbeddingsAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken = default)
@@ -103,7 +127,7 @@ public class GeminiTextEmbeddingService : ITextEmbeddingService
 
         if (!HasLiveApiKey)
         {
-            return texts.Select(t => VectorOperations.GenerateDeterministicPseudoEmbedding(t, Dimensions)).ToList();
+            return texts.Select(t => PseudoOrThrow(t, "Gemini API key is not configured.")).ToList();
         }
 
         try
@@ -157,18 +181,34 @@ public class GeminiTextEmbeddingService : ITextEmbeddingService
                 }
             }
 
-            _logger.LogWarning("Gemini batchEmbedContents failed with status {StatusCode}. Falling back to individual/pseudo embeddings.", response.StatusCode);
+            if (!_allowPseudoEmbeddings)
+            {
+                throw new EmbeddingUnavailableException(
+                    $"Gemini batchEmbedContents failed with status {(int)response.StatusCode}.");
+            }
+
+            _logger.LogWarning(
+                "Gemini batchEmbedContents failed with status {StatusCode}. Using pseudo embeddings (Rag:AllowPseudoEmbeddings).",
+                response.StatusCode);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (EmbeddingUnavailableException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error calling Gemini batchEmbedContents API. Falling back to individual/pseudo embeddings.");
+            if (!_allowPseudoEmbeddings)
+            {
+                throw new EmbeddingUnavailableException("Error calling the Gemini batch embedding API.", ex);
+            }
+
+            _logger.LogWarning(ex, "Error calling Gemini batchEmbedContents API. Using pseudo embeddings (Rag:AllowPseudoEmbeddings).");
         }
 
-        var fallbackList = new List<float[]>();
-        foreach (var t in texts)
-        {
-            fallbackList.Add(await GenerateEmbeddingAsync(t, cancellationToken));
-        }
-        return fallbackList;
+        return texts.Select(t => VectorOperations.GenerateDeterministicPseudoEmbedding(t, Dimensions)).ToList();
     }
 }

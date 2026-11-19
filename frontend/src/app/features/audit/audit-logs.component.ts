@@ -15,7 +15,7 @@ import { extractApiErrorMessage } from '../../core/http-error.util';
         <div>
           <h2 id="audit-heading">Compliance Audit Trail & AI Governance Logs</h2>
           <p class="muted">
-            Admin-only immutable history of patient/consultation mutations, soft deletes, and sanitized AI agent interactions.
+            Admin-only audit history of patient/consultation mutations, soft deletes, and sanitized AI agent interactions.
           </p>
         </div>
         <div class="tab-bar" role="tablist" aria-label="Audit views">
@@ -142,6 +142,7 @@ import { extractApiErrorMessage } from '../../core/http-error.util';
             <div class="kpi-card">
               <div class="muted">Total Requests</div>
               <div class="kpi-value">{{ summary.totalRequests | number }}</div>
+              <div class="muted" *ngIf="summary.trackedRequests !== undefined">{{ summary.trackedRequests | number }} with token data</div>
             </div>
             <div class="kpi-card">
               <div class="muted">Total Tokens</div>
@@ -176,9 +177,9 @@ import { extractApiErrorMessage } from '../../core/http-error.util';
                   <td>{{ row.dayUtc }}</td>
                   <td><span class="badge badge-secondary">{{ row.modelUsed }}</span></td>
                   <td>{{ row.requests | number }}</td>
-                  <td class="muted">{{ row.promptTokens | number }} / {{ row.completionTokens | number }}</td>
-                  <td><strong>{{ row.totalTokens | number }}</strong></td>
-                  <td>\${{ row.estimatedCostUsd | number:'1.6-6' }}</td>
+                  <td class="muted">{{ row.trackedRequests === 0 ? '—' : ((row.promptTokens | number) + ' / ' + (row.completionTokens | number)) }}</td>
+                  <td><strong>{{ row.trackedRequests === 0 ? '—' : (row.totalTokens | number) }}</strong></td>
+                  <td>{{ row.trackedRequests === 0 ? '—' : ('$' + (row.estimatedCostUsd | number:'1.6-6')) }}</td>
                   <td>{{ row.p95LatencyMs | number }} ms</td>
                 </tr>
                 <tr *ngIf="summary.breakdown.length === 0">

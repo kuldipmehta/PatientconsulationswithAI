@@ -216,6 +216,7 @@ export interface AiUsageDailyModelRow {
   dayUtc: string;
   modelUsed: string;
   requests: number;
+  trackedRequests?: number;
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
@@ -227,6 +228,7 @@ export interface AiUsageSummary {
   fromUtc?: string | null;
   toUtc?: string | null;
   totalRequests: number;
+  trackedRequests?: number;
   totalPromptTokens: number;
   totalCompletionTokens: number;
   totalTokens: number;

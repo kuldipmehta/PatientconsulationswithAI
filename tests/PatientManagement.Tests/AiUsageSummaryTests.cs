@@ -148,6 +148,7 @@ public class AiUsageSummaryTests
 
         // Assert grand totals match exact sum of the 22 in-range rows
         summary.TotalRequests.Should().Be(22);
+        summary.TrackedRequests.Should().Be(22);
         summary.TotalPromptTokens.Should().Be(20 * 100 + 1000 + 500);
         summary.TotalCompletionTokens.Should().Be(20 * 50 + 400 + 200);
         summary.TotalTokens.Should().Be(20 * 150 + 1400 + 700);
@@ -171,5 +172,60 @@ public class AiUsageSummaryTests
         nov17Pro.TotalTokens.Should().Be(2100);
         nov17Pro.EstimatedCostUsd.Should().Be(0.00787500m);
         nov17Pro.P95LatencyMs.Should().Be(1200);
+    }
+
+    [Fact]
+    public async Task GetAiUsageSummary_RowsWithoutTokenData_AreCountedAsRequestsButNotAsTracked()
+    {
+        using var factory = new CustomWebApplicationFactory();
+        var adminClient = await CreateClientForUserAsync(factory, "admin@patientportal.com", "Admin@12345", "198.51.100.64");
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+            // Logged before token tracking existed: tokens are NULL
+            db.AiInteractionLogs.Add(new AiInteractionLog
+            {
+                UserEmail = "admin@patientportal.com",
+                UserRole = "Admin",
+                Endpoint = "chat",
+                ModelUsed = "gemini-flash-lite-latest",
+                LatencyMs = 4000,
+                DurationMs = 4000,
+                CreatedAtUtc = new DateTime(2026, 11, 12, 9, 0, 0, DateTimeKind.Utc)
+            });
+
+            // Logged after tracking was added
+            db.AiInteractionLogs.Add(new AiInteractionLog
+            {
+                UserEmail = "admin@patientportal.com",
+                UserRole = "Admin",
+                Endpoint = "chat",
+                ModelUsed = "gemini-flash-lite-latest",
+                PromptTokens = 100,
+                CompletionTokens = 20,
+                TotalTokens = 120,
+                EstimatedCostUsd = 0.000018m,
+                LatencyMs = 900,
+                DurationMs = 900,
+                CreatedAtUtc = new DateTime(2026, 11, 12, 10, 0, 0, DateTimeKind.Utc)
+            });
+
+            await db.SaveChangesAsync();
+        }
+
+        var res = await adminClient.GetAsync("/api/ai/usage?from=2026-11-12&to=2026-11-12");
+        res.StatusCode.Should().Be(HttpStatusCode.OK, because: await res.Content.ReadAsStringAsync());
+
+        var summary = (await res.Content.ReadFromJsonAsync<ApiResponse<AiUsageSummaryDto>>(JsonOptions))!.Data!;
+
+        summary.TotalRequests.Should().Be(2);
+        summary.TrackedRequests.Should().Be(1);
+        summary.TotalTokens.Should().Be(120);
+
+        var row = summary.Breakdown.Single();
+        row.Requests.Should().Be(2);
+        row.TrackedRequests.Should().Be(1);
     }
 }

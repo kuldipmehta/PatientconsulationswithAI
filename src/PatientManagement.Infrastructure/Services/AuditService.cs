@@ -99,6 +99,7 @@ public class AuditService : IAuditService
             {
                 a.CreatedAtUtc,
                 a.ModelUsed,
+                IsTracked = a.PromptTokens != null || a.CompletionTokens != null || a.TotalTokens != null,
                 PromptTokens = (long)(a.PromptTokens ?? 0),
                 CompletionTokens = (long)(a.CompletionTokens ?? 0),
                 TotalTokens = (long)(a.TotalTokens ?? 0),
@@ -118,6 +119,7 @@ public class AuditService : IAuditService
                 DayUtc = g.Key.DayUtc,
                 ModelUsed = g.Key.ModelUsed,
                 Requests = g.Count(),
+                TrackedRequests = g.Count(x => x.IsTracked),
                 PromptTokens = g.Sum(x => x.PromptTokens),
                 CompletionTokens = g.Sum(x => x.CompletionTokens),
                 TotalTokens = g.Sum(x => x.TotalTokens),
@@ -133,6 +135,7 @@ public class AuditService : IAuditService
             FromUtc = fromUtc,
             ToUtc = toUtc,
             TotalRequests = rows.Count,
+            TrackedRequests = rows.Count(x => x.IsTracked),
             TotalPromptTokens = rows.Sum(x => x.PromptTokens),
             TotalCompletionTokens = rows.Sum(x => x.CompletionTokens),
             TotalTokens = rows.Sum(x => x.TotalTokens),

@@ -163,7 +163,7 @@ public class UpdateConsultationDtoValidator : AbstractValidator<UpdateConsultati
     public UpdateConsultationDtoValidator()
     {
         RuleFor(x => x.DoctorName).NotEmpty().MaximumLength(100);
-        RuleFor(x => x.Diagnosis).NotEmpty().MaximumLength(250);
+        RuleFor(x => x.Diagnosis).MaximumLength(250);
         RuleFor(x => x.DurationMinutes).InclusiveBetween(10, 240);
         RuleFor(x => x.Fee).GreaterThanOrEqualTo(0).When(x => x.Fee.HasValue);
     }

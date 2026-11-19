@@ -16,7 +16,7 @@ public class UpdateConsultationDto
     [Range(10, 240, ErrorMessage = "Duration must be between 10 and 240 minutes")]
     public int DurationMinutes { get; set; } = 30;
 
-    [Required(ErrorMessage = "Diagnosis is required")]
+    // Required for Doctor/Admin (enforced in ConsultationService); Receptionists never send clinical fields.
     [StringLength(250, ErrorMessage = "Diagnosis cannot exceed 250 characters")]
     public string Diagnosis { get; set; } = string.Empty;
 

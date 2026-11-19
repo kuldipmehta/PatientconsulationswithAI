@@ -28,7 +28,7 @@ flowchart LR
 - **Prompt Injection Defense & PII Minimization (`PatientAiSanitizer`):** User-written notes/symptoms are delimited inside `<untrusted_clinical_text>` tags; names, emails, phone numbers, and addresses are stripped before calling Gemini; tools execute inside C# authorization checks.
 - **Human-in-the-Loop Confirmation:** Scheduling via `propose_consultation` creates a `PendingAiActions` proposal (`Book Dr. Sarah Jenkins...`) requiring an explicit click to `POST /api/ai/actions/{actionId}/confirm`.
 - **Structured Output, Citations, Streaming & Simulated Banner:** Enforces Gemini `responseSchema` mapped to validated C# contracts (`ClinicalSummaryResult`, `TriageAssessmentResult`) with single-retry validation recovery, returns consultation `#ID` citations, streams responses over SSE (`/api/ai/chat/stream`) with server-side `AiChatSessions`, logs tokens, latency, cost, and prompt version to `AiInteractionLogs`, and displays an explicit **SIMULATED MODE ACTIVE** banner when running without a live server key.
-- **Retrieval-Augmented Generation (RAG):** Clinical PDF/TXT document ingestion via `PdfPig`, text chunking (500-char window, 100-char overlap), 3072-dim vector embeddings with Gemini `gemini-embedding-001` (plus offline deterministic test fallback), SQL Server vector store (`PatientDocumentChunks`), patient-scoped hybrid keyword + cosine similarity search (`semantic_search_patient_history`), and automatic chat grounding with document & visit source citations.
+- **Retrieval-Augmented Generation (RAG):** Clinical PDF/TXT document ingestion via `PdfPig`, text chunking (500-char window, 100-char overlap), 3072-dim vector embeddings with Gemini `gemini-embedding-001` (hash-based pseudo-embeddings are used only when `Rag:AllowPseudoEmbeddings` is enabled, e.g. local development; otherwise indexing fails with HTTP 503 instead of storing meaningless vectors), SQL Server vector store (`PatientDocumentChunks`), patient-scoped hybrid keyword + cosine similarity search (`semantic_search_patient_history`), and automatic chat grounding with document & visit source citations.
 
 ### 3. Resilience & Scheduling Reliability
 - **Polly Standard Resilience:** `AddStandardResilienceHandler` wraps outbound Gemini calls with exponential backoff retries, timeouts, and circuit breaking.
@@ -77,7 +77,7 @@ For **structured extraction and triage**, I would pick **`gemini-3.1-flash-lite`
 │   ├── PatientManagement.Infrastructure/  # EF Core 10, Migrations, Auth, AI Safety, Blob & Email Services
 │   └── PatientManagement.Api/             # .NET 10 Controllers, JWT/CORS/RateLimit Middleware, Health Checks
 ├── tests/
-│   └── PatientManagement.Tests/           # 103 xUnit Tests (Unit, Integration, RBAC, Concurrency, Mocked AI, RAG, Structured Output, Prompt Versioning & Multi-Model Eval Suite)
+│   └── PatientManagement.Tests/           # 114 xUnit Tests (Unit, Integration, RBAC, Concurrency, Mocked AI, RAG, Structured Output, Prompt Versioning & Multi-Model Eval Suite)
 ├── prompts/                               # Versioned system prompts (summary.v1/v2, triage.v1, chat.v1)
 ├── docs/                                  # Evaluation reports (model-comparison.md, summary-temperature-experiment.md)
 ├── frontend/                              # Angular 19 Standalone SPA (Lazy-Loaded Features + Karma Specs)
@@ -136,7 +136,7 @@ Passwords are read from `Seed:AdminPassword`, `Seed:DoctorPassword`, and `Seed:R
 
 ## Testing & Verification
 
-### Backend (.NET 10 — 103 Automated Tests)
+### Backend (.NET 10 — 114 Automated Tests)
 Includes unit tests, InMemory API integration tests (`WebApplicationFactory<Program>`), RBAC & IDOR scoping checks (`401`/`403`), concurrency & double-booking (`409`), upload magic-byte rejection (`400`), Swagger OpenAPI verification, mocked HTTP Gemini tool-calling, token/cost/usage aggregation, structured JSON retry/fallback, prompt versioning, `ILlmClient` (Gemini + Ollama), and a **28-case + multi-model offline AI evaluation suite** (`tests/PatientManagement.Tests/Evaluation/`):
 
 ```bash

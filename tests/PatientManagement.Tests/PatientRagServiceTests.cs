@@ -43,7 +43,9 @@ public class PatientRagServiceTests : IDisposable
         _currentUserMock.Setup(u => u.DoctorId).Returns(1);
         _currentUserMock.Setup(u => u.UserId).Returns(10);
 
-        var config = new ConfigurationBuilder().AddInMemoryCollection().Build();
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Rag:AllowPseudoEmbeddings"] = "true" })
+            .Build();
         _embeddingService = new GeminiTextEmbeddingService(
             new HttpClient(),
             config,
@@ -293,6 +295,9 @@ public class PatientRagServiceTests : IDisposable
         };
         _dbContext.Consultations.Add(consultation);
 
+        var doc = new PatientDocument { Id = 60, PatientId = 11, FileName = "Blood_Test.pdf", ContentType = "application/pdf", Status = "Indexed" };
+        _dbContext.PatientDocuments.Add(doc);
+
         var docChunk = new PatientDocumentChunk
         {
             PatientDocumentId = 60,
@@ -323,6 +328,190 @@ public class PatientRagServiceTests : IDisposable
         var updatedChunk = await _dbContext.PatientDocumentChunks.FirstAsync(c => c.PatientDocumentId == 60);
         updatedChunk.EmbeddingDimensions.Should().BeGreaterThan(0);
         updatedChunk.EmbeddingVectorJson.Should().NotBe("[]");
+    }
+
+    [Fact]
+    public async Task SearchPatientKnowledgeAsync_ExcludesChunksOfSoftDeletedConsultations()
+    {
+        _dbContext.Patients.Add(new Patient { Id = 31, FirstName = "Hidden", LastName = "Visit", Email = "hidden@example.com", PrimaryDoctorId = 1 });
+        var consultation = new Consultation
+        {
+            Id = 3100,
+            PatientId = 31,
+            DoctorName = "Dr. Adams",
+            ConsultationDate = DateTime.UtcNow.AddDays(-3),
+            Diagnosis = "Secret hypertension diagnosis",
+            Status = ConsultationStatus.Completed,
+            IsDeleted = true
+        };
+        _dbContext.Consultations.Add(consultation);
+        _dbContext.PatientDocumentChunks.Add(new PatientDocumentChunk
+        {
+            PatientId = 31,
+            ConsultationId = 3100,
+            SourceType = "Consultation",
+            SourceLabel = "Consultation #3100",
+            TextContent = "Diagnosis: Secret hypertension diagnosis",
+            EmbeddingVectorJson = VectorOperations.SerializeVector(VectorOperations.GenerateDeterministicPseudoEmbedding("Secret hypertension diagnosis", 3072)),
+            EmbeddingDimensions = 3072
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var sut = new PatientRagService(
+            _dbContext,
+            _blobStorageMock.Object,
+            _embeddingService,
+            _currentUserMock.Object,
+            _loggerMock.Object);
+
+        var results = await sut.SearchPatientKnowledgeAsync(31, "hypertension diagnosis", topK: 5, minScore: 0.15);
+
+        results.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task SearchPatientKnowledgeAsync_MatchesWholeWordsOnly_NotSubstrings()
+    {
+        _dbContext.Patients.Add(new Patient { Id = 41, FirstName = "Word", LastName = "Boundary", Email = "wb@example.com", PrimaryDoctorId = 1 });
+        _dbContext.PatientDocumentChunks.AddRange(
+            new PatientDocumentChunk
+            {
+                PatientId = 41,
+                SourceType = "PatientDocument",
+                SourceLabel = "diet.txt (Section 1/1)",
+                TextContent = "Advised salt restriction. The default dosing was kept.",
+                EmbeddingVectorJson = "[]",
+                EmbeddingDimensions = 0
+            },
+            new PatientDocumentChunk
+            {
+                PatientId = 41,
+                SourceType = "PatientDocument",
+                SourceLabel = "lab.txt (Section 1/1)",
+                TextContent = "ALT is 68 U/L, mildly elevated.",
+                EmbeddingVectorJson = "[]",
+                EmbeddingDimensions = 0
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var sut = new PatientRagService(_dbContext, _blobStorageMock.Object, _embeddingService, _currentUserMock.Object, _loggerMock.Object);
+
+        var results = await sut.SearchPatientKnowledgeAsync(41, "alt", topK: 5, minScore: 0.15);
+
+        results.Should().ContainSingle();
+        results[0].SourceLabel.Should().Be("lab.txt (Section 1/1)");
+    }
+
+    [Fact]
+    public async Task SearchPatientKnowledgeAsync_ConfiguredMinScoreFloor_RaisesTheBarForWeakKeywordMatches()
+    {
+        _dbContext.Patients.Add(new Patient { Id = 42, FirstName = "Score", LastName = "Floor", Email = "sf@example.com", PrimaryDoctorId = 1 });
+        _dbContext.PatientDocumentChunks.Add(new PatientDocumentChunk
+        {
+            PatientId = 42,
+            SourceType = "PatientDocument",
+            SourceLabel = "lab.txt (Section 1/1)",
+            TextContent = "SGPT is 68 U/L.",
+            EmbeddingVectorJson = "[]",
+            EmbeddingDimensions = 0
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var strictConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Rag:MinScoreFloor"] = "0.9" })
+            .Build();
+
+        var lenient = new PatientRagService(_dbContext, _blobStorageMock.Object, _embeddingService, _currentUserMock.Object, _loggerMock.Object);
+        var strict = new PatientRagService(_dbContext, _blobStorageMock.Object, _embeddingService, _currentUserMock.Object, _loggerMock.Object, strictConfig);
+
+        // One of the two query words matches => keyword score 0.625
+        (await lenient.SearchPatientKnowledgeAsync(42, "sgpt zzzzqq", topK: 5, minScore: 0.15)).Should().ContainSingle();
+        (await strict.SearchPatientKnowledgeAsync(42, "sgpt zzzzqq", topK: 5, minScore: 0.15)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task EmbeddingService_WithoutKeyAndPseudoDisabled_ThrowsEmbeddingUnavailable()
+    {
+        var strictConfig = new ConfigurationBuilder().AddInMemoryCollection().Build();
+        var strict = new GeminiTextEmbeddingService(
+            new HttpClient(),
+            strictConfig,
+            Mock.Of<ILogger<GeminiTextEmbeddingService>>());
+
+        var single = async () => await strict.GenerateEmbeddingAsync("SGPT 68 U/L");
+        var batch = async () => await strict.GenerateBatchEmbeddingsAsync(new[] { "SGPT 68 U/L" });
+
+        await single.Should().ThrowAsync<PatientManagement.Core.Exceptions.EmbeddingUnavailableException>();
+        await batch.Should().ThrowAsync<PatientManagement.Core.Exceptions.EmbeddingUnavailableException>();
+    }
+
+    [Fact]
+    public async Task UploadAndIndexDocumentAsync_WhenEmbeddingsFail_StoresNothingAndSkipsBlobUpload()
+    {
+        // Arrange
+        _dbContext.Patients.Add(new Patient { Id = 21, FirstName = "Fail", LastName = "Closed", Email = "fail@example.com", PrimaryDoctorId = 1 });
+        await _dbContext.SaveChangesAsync();
+
+        var failingEmbeddings = new Mock<ITextEmbeddingService>();
+        failingEmbeddings
+            .Setup(e => e.GenerateBatchEmbeddingsAsync(It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new PatientManagement.Core.Exceptions.EmbeddingUnavailableException("quota"));
+
+        var sut = new PatientRagService(
+            _dbContext,
+            _blobStorageMock.Object,
+            failingEmbeddings.Object,
+            _currentUserMock.Object,
+            _loggerMock.Object);
+
+        var bytes = Encoding.UTF8.GetBytes("SGPT (ALT): 68 U/L. Normal range 7-56 U/L.");
+        var file = new FormFile(new MemoryStream(bytes), 0, bytes.Length, "file", "lab.txt")
+        {
+            Headers = new HeaderDictionary(),
+            ContentType = "text/plain"
+        };
+
+        // Act
+        var act = async () => await sut.UploadAndIndexDocumentAsync(21, file, new UploadPatientDocumentDto());
+
+        // Assert
+        await act.Should().ThrowAsync<PatientManagement.Core.Exceptions.EmbeddingUnavailableException>();
+        (await _dbContext.PatientDocuments.IgnoreQueryFilters().CountAsync()).Should().Be(0);
+        (await _dbContext.PatientDocumentChunks.IgnoreQueryFilters().CountAsync()).Should().Be(0);
+        _blobStorageMock.Verify(b => b.UploadAsync(
+            It.IsAny<Stream>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task UploadAndIndexDocumentAsync_WhenEmbeddingCountMismatches_DoesNotStoreZeroVectors()
+    {
+        _dbContext.Patients.Add(new Patient { Id = 22, FirstName = "Count", LastName = "Mismatch", Email = "count@example.com", PrimaryDoctorId = 1 });
+        await _dbContext.SaveChangesAsync();
+
+        var shortEmbeddings = new Mock<ITextEmbeddingService>();
+        shortEmbeddings
+            .Setup(e => e.GenerateBatchEmbeddingsAsync(It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<float[]>());
+
+        var sut = new PatientRagService(
+            _dbContext,
+            _blobStorageMock.Object,
+            shortEmbeddings.Object,
+            _currentUserMock.Object,
+            _loggerMock.Object);
+
+        var bytes = Encoding.UTF8.GetBytes("Hemoglobin 13.5 g/dL within normal limits.");
+        var file = new FormFile(new MemoryStream(bytes), 0, bytes.Length, "file", "cbc.txt")
+        {
+            Headers = new HeaderDictionary(),
+            ContentType = "text/plain"
+        };
+
+        var act = async () => await sut.UploadAndIndexDocumentAsync(22, file, new UploadPatientDocumentDto());
+
+        await act.Should().ThrowAsync<PatientManagement.Core.Exceptions.EmbeddingUnavailableException>();
+        (await _dbContext.PatientDocumentChunks.IgnoreQueryFilters().CountAsync()).Should().Be(0);
     }
 
     public void Dispose()

@@ -54,7 +54,9 @@ public class PatientDocumentConfigurations :
         builder.HasIndex(c => c.PatientDocumentId);
         builder.HasIndex(c => c.ConsultationId);
 
-        builder.HasQueryFilter(c => !c.Patient.IsDeleted && (c.PatientDocument == null || !c.PatientDocument.IsDeleted));
+        builder.HasQueryFilter(c => !c.Patient.IsDeleted &&
+            (c.PatientDocumentId == null || (c.PatientDocument != null && !c.PatientDocument.IsDeleted)) &&
+            (c.ConsultationId == null || (c.Consultation != null && !c.Consultation.IsDeleted)));
 
         builder.HasOne(c => c.Patient)
             .WithMany(p => p.DocumentChunks)

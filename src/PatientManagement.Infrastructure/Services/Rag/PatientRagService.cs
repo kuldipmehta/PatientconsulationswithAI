@@ -1,6 +1,8 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using PatientManagement.Core.DTOs.Rag;
 using PatientManagement.Core.Entities;
@@ -23,7 +25,9 @@ public class PatientRagService : IPatientRagService
         "and", "or", "what", "which", "who", "whom", "this", "that", "these",
         "those", "does", "did", "have", "has", "had", "can", "could", "should",
         "would", "any", "some", "tell", "show", "give", "me", "it", "its",
-        "their", "his", "her", "my", "our", "you", "your"
+        "their", "his", "her", "my", "our", "you", "your",
+        // Generic clinical-document words: they appear in nearly every chunk and would make any chunk a "match".
+        "patient", "patients", "value", "values", "result", "results", "report", "document", "level"
     };
 
     private readonly ApplicationDbContext _dbContext;
@@ -31,19 +35,23 @@ public class PatientRagService : IPatientRagService
     private readonly ITextEmbeddingService _embeddingService;
     private readonly ICurrentUserService _currentUser;
     private readonly ILogger<PatientRagService> _logger;
+    private readonly double _minScoreFloor;
 
     public PatientRagService(
         ApplicationDbContext dbContext,
         IBlobStorageService blobStorageService,
         ITextEmbeddingService embeddingService,
         ICurrentUserService currentUser,
-        ILogger<PatientRagService> logger)
+        ILogger<PatientRagService> logger,
+        IConfiguration? configuration = null)
     {
         _dbContext = dbContext;
         _blobStorageService = blobStorageService;
         _embeddingService = embeddingService;
         _currentUser = currentUser;
         _logger = logger;
+        // Lower bound for relevance. Callers can ask for a stricter minScore but never a looser one.
+        _minScoreFloor = configuration?.GetValue("Rag:MinScoreFloor", 0.0) ?? 0.0;
     }
 
     public async Task<PatientDocumentResponseDto> UploadAndIndexDocumentAsync(
@@ -94,6 +102,17 @@ public class PatientRagService : IPatientRagService
             throw new InvalidOperationException("No readable text could be extracted from the document.");
         }
 
+        var chunks = TextChunker.ChunkText(extractedText, maxChunkSize: 500, overlapSize: 100);
+        if (chunks.Count == 0)
+        {
+            chunks.Add(extractedText[..Math.Min(extractedText.Length, 500)]);
+        }
+
+        // Embed BEFORE writing anything (blob or database). If the embedding service is unavailable the request
+        // fails with 503 and no half-indexed document is left behind.
+        var embeddings = await _embeddingService.GenerateBatchEmbeddingsAsync(chunks, cancellationToken);
+        EnsureEmbeddingCount(embeddings, chunks.Count);
+
         // Upload to private blob container
         string? blobName = null;
         using (var uploadStream = new MemoryStream(fileBytes))
@@ -106,12 +125,6 @@ public class PatientRagService : IPatientRagService
                 containerName: "patient-documents",
                 cancellationToken: cancellationToken);
             blobName = uploadResult.BlobName;
-        }
-
-        var chunks = TextChunker.ChunkText(extractedText, maxChunkSize: 500, overlapSize: 100);
-        if (chunks.Count == 0)
-        {
-            chunks.Add(extractedText[..Math.Min(extractedText.Length, 500)]);
         }
 
         var document = new PatientDocument
@@ -130,18 +143,11 @@ public class PatientRagService : IPatientRagService
             CreatedAtUtc = DateTime.UtcNow
         };
 
-        _dbContext.PatientDocuments.Add(document);
-        await _dbContext.SaveChangesAsync(cancellationToken);
-
-        // Generate embeddings and store chunks
-        var embeddings = await _embeddingService.GenerateBatchEmbeddingsAsync(chunks, cancellationToken);
-
         for (int i = 0; i < chunks.Count; i++)
         {
-            var emb = (i < embeddings.Count) ? embeddings[i] : new float[768];
-            var chunkEntity = new PatientDocumentChunk
+            var emb = embeddings[i];
+            document.Chunks.Add(new PatientDocumentChunk
             {
-                PatientDocumentId = document.Id,
                 PatientId = patientId,
                 ConsultationId = dto.ConsultationId,
                 ChunkIndex = i + 1,
@@ -151,11 +157,21 @@ public class PatientRagService : IPatientRagService
                 EmbeddingVectorJson = VectorOperations.SerializeVector(emb),
                 EmbeddingDimensions = emb.Length,
                 CreatedAtUtc = DateTime.UtcNow
-            };
-            _dbContext.PatientDocumentChunks.Add(chunkEntity);
+            });
         }
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        _dbContext.PatientDocuments.Add(document);
+
+        try
+        {
+            // One SaveChanges: the document and all of its chunks are stored together or not at all.
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch
+        {
+            await TryDeleteBlobAsync(blobName);
+            throw;
+        }
 
         _logger.LogInformation(
             "Document #{DocId} '{FileName}' indexed successfully for patient #{PatientId} with {ChunksCount} chunks.",
@@ -244,6 +260,10 @@ public class PatientRagService : IPatientRagService
             .Distinct()
             .ToList();
 
+        var effectiveMinScore = Math.Max(minScore, _minScoreFloor);
+        var queryMatchers = queryWords.Select(BuildWordMatcher).ToList();
+        var staleEmbeddingChunks = 0;
+
         var scored = new List<(PatientDocumentChunk Chunk, double Score)>();
 
         foreach (var c in chunks)
@@ -259,18 +279,18 @@ public class PatientRagService : IPatientRagService
                 }
                 else
                 {
-                    // Fallback across differing dimension sets (e.g. 768 vs 3072)
-                    var fallbackQueryVec = VectorOperations.GenerateDeterministicPseudoEmbedding(query, vec.Length);
-                    vectorScore = VectorOperations.CosineSimilarity(fallbackQueryVec, vec);
+                    // Embedded with a different model/dimension. Comparing against a made-up vector would be
+                    // meaningless, so score this chunk by keywords only and flag it for re-indexing.
+                    staleEmbeddingChunks++;
                 }
             }
 
             int matchedKeywords = 0;
             if (queryWords.Count > 0)
             {
-                foreach (var word in queryWords)
+                foreach (var matcher in queryMatchers)
                 {
-                    if (c.TextContent.Contains(word, StringComparison.OrdinalIgnoreCase))
+                    if (matcher.IsMatch(c.TextContent))
                     {
                         matchedKeywords++;
                     }
@@ -295,10 +315,17 @@ public class PatientRagService : IPatientRagService
                 finalScore = vectorScore;
             }
 
-            if (finalScore >= minScore)
+            if (finalScore >= effectiveMinScore)
             {
                 scored.Add((c, finalScore));
             }
+        }
+
+        if (staleEmbeddingChunks > 0)
+        {
+            _logger.LogWarning(
+                "{Count} chunks of patient #{PatientId} use embeddings from a different model or dimension and were scored by keywords only. Run the patient re-index.",
+                staleEmbeddingChunks, patientId);
         }
 
         return scored
@@ -371,10 +398,11 @@ public class PatientRagService : IPatientRagService
         }
 
         var embeddings = await _embeddingService.GenerateBatchEmbeddingsAsync(chunks, cancellationToken);
+        EnsureEmbeddingCount(embeddings, chunks.Count);
 
         for (int i = 0; i < chunks.Count; i++)
         {
-            var emb = (i < embeddings.Count) ? embeddings[i] : new float[768];
+            var emb = embeddings[i];
             _dbContext.PatientDocumentChunks.Add(new PatientDocumentChunk
             {
                 PatientId = consultation.PatientId,
@@ -419,6 +447,7 @@ public class PatientRagService : IPatientRagService
         {
             var chunkTexts = documentChunks.Select(c => c.TextContent).ToList();
             var embeddings = await _embeddingService.GenerateBatchEmbeddingsAsync(chunkTexts, cancellationToken);
+            EnsureEmbeddingCount(embeddings, chunkTexts.Count);
 
             for (int i = 0; i < documentChunks.Count; i++)
             {
@@ -459,6 +488,38 @@ public class PatientRagService : IPatientRagService
         }
 
         return patient;
+    }
+
+    /// <summary>Whole-word, case-insensitive match (plain plurals allowed), so "alt" does not match "salt" or "default".</summary>
+    private static Regex BuildWordMatcher(string word) =>
+        new(@"(?<![\p{L}\p{N}])" + Regex.Escape(word) + @"s?(?![\p{L}\p{N}])",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+            TimeSpan.FromMilliseconds(200));
+
+    private static void EnsureEmbeddingCount(IReadOnlyCollection<float[]> embeddings, int expected)
+    {
+        if (embeddings.Count != expected || embeddings.Any(e => e.Length == 0))
+        {
+            throw new EmbeddingUnavailableException(
+                $"Expected {expected} embeddings but received {embeddings.Count}. Nothing was indexed.");
+        }
+    }
+
+    private async Task TryDeleteBlobAsync(string? blobName)
+    {
+        if (string.IsNullOrWhiteSpace(blobName))
+        {
+            return;
+        }
+
+        try
+        {
+            await _blobStorageService.DeleteAsync(blobName, containerName: "patient-documents", cancellationToken: CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not clean up blob {BlobName} after a failed document save.", blobName);
+        }
     }
 
     private static void ValidateMagicBytes(byte[] fileBytes, string ext)

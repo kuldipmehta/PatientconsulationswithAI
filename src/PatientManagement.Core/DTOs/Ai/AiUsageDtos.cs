@@ -5,6 +5,8 @@ public class AiUsageSummaryDto
     public DateTime? FromUtc { get; set; }
     public DateTime? ToUtc { get; set; }
     public int TotalRequests { get; set; }
+    /// <summary>Requests that actually have token data (older rows logged before usage tracking do not).</summary>
+    public int TrackedRequests { get; set; }
     public long TotalPromptTokens { get; set; }
     public long TotalCompletionTokens { get; set; }
     public long TotalTokens { get; set; }
@@ -18,6 +20,7 @@ public class AiUsageDailyModelRowDto
     public string DayUtc { get; set; } = string.Empty;
     public string ModelUsed { get; set; } = string.Empty;
     public int Requests { get; set; }
+    public int TrackedRequests { get; set; }
     public long PromptTokens { get; set; }
     public long CompletionTokens { get; set; }
     public long TotalTokens { get; set; }

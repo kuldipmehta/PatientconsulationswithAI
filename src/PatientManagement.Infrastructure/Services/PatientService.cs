@@ -332,6 +332,25 @@ public class PatientService : IPatientService
             consultation.DeletedByUserId = _currentUser?.UserId;
         }
 
+        // Embeddings and chunk text are derived copies of clinical data: purge them with the patient.
+        // Uploaded documents are soft-deleted (the original files stay in private storage for retention).
+        var derivedChunks = await _dbContext.PatientDocumentChunks
+            .IgnoreQueryFilters()
+            .Where(c => c.PatientId == id)
+            .ToListAsync(cancellationToken);
+        _dbContext.PatientDocumentChunks.RemoveRange(derivedChunks);
+
+        var documents = await _dbContext.PatientDocuments
+            .IgnoreQueryFilters()
+            .Where(d => d.PatientId == id && !d.IsDeleted)
+            .ToListAsync(cancellationToken);
+        foreach (var document in documents)
+        {
+            document.IsDeleted = true;
+            document.DeletedAtUtc = now;
+            document.DeletedByUserId = _currentUser?.UserId;
+        }
+
         await _dbContext.SaveChangesAsync(cancellationToken);
         _logger.LogInformation("Soft-deleted patient #{PatientId} and {Count} consultations by user {UserId}.",
             id, patient.Consultations.Count, _currentUser?.UserId);

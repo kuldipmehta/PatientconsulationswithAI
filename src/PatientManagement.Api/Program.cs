@@ -76,7 +76,10 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
     options.KnownIPNetworks.Clear();
     options.KnownProxies.Clear();
-    options.ForwardLimit = 2;
+    // Trust only the LAST X-Forwarded-For entry (the address the first proxy saw). With a higher limit a client
+    // can prepend its own entries and choose which IP the per-IP rate limiter sees. Raise this only when you
+    // know exactly how many proxies sit in front of the app (App Service: normally 1).
+    options.ForwardLimit = builder.Configuration.GetValue("ForwardedHeaders:ForwardLimit", 1);
 });
 
 builder.Services.AddRateLimiter(options =>
@@ -194,7 +197,7 @@ builder.Services.AddSwaggerGen(c =>
     {
         Title = "Patient Consultations & AI Clinical Support API",
         Version = "v1",
-        Description = "Production-hardened .NET 10 Web API with JWT RBAC, Private Blob SAS storage, Soft Delete + Audit Trail, Double-Booking Prevention, and Safe Gemini Clinical AI."
+        Description = "Security-focused .NET 10 Web API with JWT RBAC, Private Blob SAS storage, Soft Delete + Audit Trail, Double-Booking Prevention, and Safe Gemini Clinical AI."
     });
 
     c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme

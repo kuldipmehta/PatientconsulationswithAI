@@ -11,3 +11,9 @@ public class BookingConflictException : Exception
     public BookingConflictException(string message)
         : base(message) { }
 }
+
+public class EmbeddingUnavailableException : Exception
+{
+    public EmbeddingUnavailableException(string message, Exception? innerException = null)
+        : base(message, innerException) { }
+}

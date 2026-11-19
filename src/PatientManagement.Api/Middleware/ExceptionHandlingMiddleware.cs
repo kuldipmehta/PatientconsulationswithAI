@@ -53,6 +53,11 @@ public class ExceptionHandlingMiddleware
                 "Concurrency conflict: This record was modified by another user. Please refresh and try again.",
                 new List<string> { "Stale RowVersion token detected." }),
 
+            EmbeddingUnavailableException => (
+                HttpStatusCode.ServiceUnavailable,
+                "The document indexing service is temporarily unavailable. Please try again later.",
+                new List<string> { "Embedding service unavailable." }),
+
             KeyNotFoundException notFound => (
                 HttpStatusCode.NotFound,
                 notFound.Message,
@@ -71,7 +76,7 @@ public class ExceptionHandlingMiddleware
             _ => (
                 HttpStatusCode.InternalServerError,
                 "An unexpected internal error occurred on the server.",
-                new List<string> { exception.Message })
+                new List<string> { $"Reference: {context.TraceIdentifier}" })
         };
 
         context.Response.StatusCode = (int)statusCode;

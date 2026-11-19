@@ -309,6 +309,37 @@ public class PatientServiceTests : IDisposable
         await Assert.ThrowsAsync<ForbiddenAccessException>(() => scopedService.GetPatientPictureAsync(unassignedPatient.Id));
     }
 
+    [Fact]
+    public async Task DeletePatientAsync_PurgesRagChunksAndSoftDeletesDocuments()
+    {
+        var patient = new Patient { FirstName = "Erase", LastName = "Me", Email = "eraseme@example.com", Age = 50, Gender = "Female", CreatedAtUtc = DateTime.UtcNow };
+        _dbContext.Patients.Add(patient);
+        await _dbContext.SaveChangesAsync();
+
+        var document = new PatientDocument { PatientId = patient.Id, FileName = "report.pdf", ContentType = "application/pdf", Status = "Indexed", TotalChunks = 1 };
+        _dbContext.PatientDocuments.Add(document);
+        await _dbContext.SaveChangesAsync();
+
+        _dbContext.PatientDocumentChunks.Add(new PatientDocumentChunk
+        {
+            PatientId = patient.Id,
+            PatientDocumentId = document.Id,
+            SourceType = "PatientDocument",
+            SourceLabel = "report.pdf (Section 1/1)",
+            TextContent = "SGPT 68 U/L",
+            EmbeddingVectorJson = "[0.1,0.2]",
+            EmbeddingDimensions = 2
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var deleted = await _patientService.DeletePatientAsync(patient.Id);
+
+        deleted.Should().BeTrue();
+        (await _dbContext.PatientDocumentChunks.IgnoreQueryFilters().CountAsync(c => c.PatientId == patient.Id)).Should().Be(0);
+        var storedDocument = await _dbContext.PatientDocuments.IgnoreQueryFilters().FirstAsync(d => d.Id == document.Id);
+        storedDocument.IsDeleted.Should().BeTrue();
+    }
+
     public void Dispose()
     {
         _dbContext.Database.EnsureDeleted();

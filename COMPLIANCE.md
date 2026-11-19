@@ -38,7 +38,7 @@ If serving Covered Entities or Business Associates in the United States:
 - **Business Associate Agreements (BAAs):** Execute BAAs with Microsoft Azure (App Service, Azure SQL, Azure Blob Storage, Key Vault, Application Insights) and Google Cloud (Vertex AI / Enterprise Gemini) before storing or transmitting live ePHI.
 - **Administrative & Technical Controls Implemented:**
   - Role-based access control (`Admin`, `Doctor`, `Receptionist`) with physician-level patient scoping.
-  - Immutable `AuditLogs` (entity creates, edits, soft deletes) and `AiInteractionLogs`.
+  - Application-written `AuditLogs` (entity creates, edits, soft deletes) and `AiInteractionLogs`. These are not yet enforced as append-only at the database level (restrict DB permissions or add hash chaining before claiming immutability).
   - No credentials or secrets in onboarding emails or client DTOs.
   - Private blob storage containers (`PublicAccessType.None`) with authenticated proxy streaming and short-lived SAS tokens.
   - TLS transport encryption in production (`UseHttpsRedirection`) and environment-driven secret management (Azure Key Vault / environment variables).
