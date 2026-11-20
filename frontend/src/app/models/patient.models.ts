@@ -432,3 +432,65 @@ export interface ClinicalExemplarDto {
   clinicalRationale: string;
   relevanceScore?: number | null;
 }
+
+// ==================== PYTHON FASTAPI AI MICROSERVICE ====================
+export interface PythonAiHealth {
+  status: string;
+  service: string;
+  version: string;
+  timestamp: string;
+}
+
+export interface PythonAiEngineStatus {
+  status: string;
+  geminiConfigured: boolean;
+  model: string;
+  fastapiLifespanReady: boolean;
+  uptimeSeconds: number;
+}
+
+export interface PythonVitalSigns {
+  systolicBp?: number | null;
+  diastolicBp?: number | null;
+  heartRateBpm?: number | null;
+  bloodGlucoseMgDl?: number | null;
+  hba1cPercent?: number | null;
+}
+
+export interface PythonMedicationEntry {
+  medicationName: string;
+  dosage?: string | null;
+  isActive: boolean;
+  contraindicationWarning?: string | null;
+}
+
+export interface PythonClinicalRecord {
+  vitals: PythonVitalSigns;
+  diagnosedConditions: string[];
+  medications: PythonMedicationEntry[];
+  urgencyLevel: string;
+  requiresImmediateEscalation: boolean;
+  extractionTimestamp: string;
+}
+
+export interface PythonDocumentChunk {
+  chunkIndex: number;
+  content: string;
+  charStart: number;
+  charEnd: number;
+  embeddingPreview: number[];
+}
+
+export interface PythonJobStatus {
+  jobId: string;
+  documentId: string;
+  patientId: number;
+  documentType: string;
+  status: string;
+  chunksCount: number;
+  chunks: PythonDocumentChunk[];
+  createdAt: string;
+  completedAt?: string | null;
+  error?: string | null;
+}
+

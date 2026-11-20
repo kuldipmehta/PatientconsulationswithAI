@@ -26,6 +26,10 @@ import {
   PatientFilterParams,
   PatientSummary,
   PendingActionProposal,
+  PythonAiEngineStatus,
+  PythonAiHealth,
+  PythonClinicalRecord,
+  PythonJobStatus,
   RagSearchResultDto,
   UpdateConsultationDto,
   UploadPatientDocumentDto
@@ -327,6 +331,53 @@ export class ApiService {
 
   reindexPatientConsultations(patientId: number): Observable<ApiResponse<{ patientId: number; consultationsIndexed: number }>> {
     return this.http.post<ApiResponse<{ patientId: number; consultationsIndexed: number }>>(`${this.baseUrl}/patients/${patientId}/rag/reindex`, {});
+  }
+
+  // ==================== PYTHON FASTAPI AI MICROSERVICE ====================
+  getPythonAiHealth(): Observable<ApiResponse<PythonAiHealth>> {
+    return this.http.get<ApiResponse<PythonAiHealth>>(`${this.baseUrl}/ai/microservice/health`);
+  }
+
+  getPythonAiEngineStatus(): Observable<ApiResponse<PythonAiEngineStatus>> {
+    return this.http.get<ApiResponse<PythonAiEngineStatus>>(`${this.baseUrl}/ai/microservice/engine`);
+  }
+
+  extractClinicalRecordViaPython(rawClinicalText: string, patientId?: number): Observable<ApiResponse<PythonClinicalRecord>> {
+    return this.http.post<ApiResponse<PythonClinicalRecord>>(`${this.baseUrl}/ai/microservice/extract`, {
+      raw_clinical_text: rawClinicalText,
+      patient_id: patientId ?? null
+    });
+  }
+
+  ingestDocumentViaPython(
+    documentId: string,
+    patientId: number,
+    documentType: string,
+    content: string,
+    chunkSize = 350,
+    chunkOverlap = 50
+  ): Observable<ApiResponse<{ jobId: string; status: string; message: string; documentId: string; patientId: number }>> {
+    return this.http.post<ApiResponse<{ jobId: string; status: string; message: string; documentId: string; patientId: number }>>(
+      `${this.baseUrl}/ai/microservice/documents/ingest`,
+      {
+        document_id: documentId,
+        patient_id: patientId,
+        document_type: documentType,
+        content,
+        chunk_size: chunkSize,
+        chunk_overlap: chunkOverlap
+      }
+    );
+  }
+
+  getPythonDocumentJobStatus(jobId: string): Observable<ApiResponse<PythonJobStatus>> {
+    return this.http.get<ApiResponse<PythonJobStatus>>(`${this.baseUrl}/ai/microservice/documents/jobs/${encodeURIComponent(jobId)}`);
+  }
+
+  listPythonDocumentJobs(patientId?: number): Observable<ApiResponse<PythonJobStatus[]>> {
+    let params = new HttpParams();
+    if (patientId) params = params.set('patientId', patientId);
+    return this.http.get<ApiResponse<PythonJobStatus[]>>(`${this.baseUrl}/ai/microservice/documents/jobs`, { params });
   }
 
   private parseSseBlock(block: string): SseChatEvent | null {

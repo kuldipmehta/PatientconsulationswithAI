@@ -92,6 +92,21 @@ public static class DependencyInjection
             options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(60);
         });
 
+        // Python FastAPI AI Microservice Client (Sidecar Polyglot Bridge)
+        services.AddHttpClient<IPythonAiServiceClient, PythonAiServiceClient>(client =>
+        {
+            var timeoutSec = configuration.GetValue<int>("PythonAiService:TimeoutSeconds", 30);
+            client.Timeout = TimeSpan.FromSeconds(timeoutSec);
+        })
+        .AddStandardResilienceHandler(options =>
+        {
+            options.Retry.MaxRetryAttempts = 1;
+            options.Retry.UseJitter = true;
+            options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(15);
+            options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(30);
+            options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(60);
+        });
+
         return services;
     }
 }
