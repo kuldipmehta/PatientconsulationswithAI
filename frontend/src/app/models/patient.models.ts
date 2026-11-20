@@ -351,6 +351,7 @@ export interface AiChatMessage {
   sourceCitations?: AiSourceCitation[];
   collaboratingAgents?: string[];
   pharmacovigilanceWarnings?: string[];
+  injectedExemplars?: string[];
   groundingScore?: number | null;
   isGrounded?: boolean;
   wasSelfCorrected?: boolean;
@@ -371,6 +372,7 @@ export interface AiChatResponse {
   sourceCitations: AiSourceCitation[];
   collaboratingAgents?: string[];
   pharmacovigilanceWarnings?: string[];
+  injectedExemplars?: string[];
   groundingScore?: number | null;
   isGrounded?: boolean;
   wasSelfCorrected?: boolean;
@@ -419,4 +421,14 @@ export interface LlmJudgeEvaluationResult {
   metrics: LlmJudgeMetricScore[];
   chainOfThoughtCritique: string;
   evaluatedAtUtc: string;
+}
+
+export interface ClinicalExemplarDto {
+  id: string;
+  domain: string;
+  scenarioTitle: string;
+  query: string;
+  idealOutput: string;
+  clinicalRationale: string;
+  relevanceScore?: number | null;
 }

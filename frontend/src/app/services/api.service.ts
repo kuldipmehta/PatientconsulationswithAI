@@ -11,6 +11,7 @@ import {
   AiUsageSummary,
   ApiResponse,
   AuditLog,
+  ClinicalExemplarDto,
   Consultation,
   CreateConsultationDto,
   Doctor,
@@ -42,6 +43,7 @@ export interface SseChatEvent {
     sourceCitations?: AiSourceCitation[];
     collaboratingAgents?: string[];
     pharmacovigilanceWarnings?: string[];
+    injectedExemplars?: string[];
     groundingScore?: number | null;
     isGrounded?: boolean;
     wasSelfCorrected?: boolean;
@@ -283,6 +285,13 @@ export class ApiService {
 
   evaluateAiResponse(request: LlmJudgeEvaluationRequest): Observable<ApiResponse<LlmJudgeEvaluationResult>> {
     return this.http.post<ApiResponse<LlmJudgeEvaluationResult>>(`${this.baseUrl}/ai/evaluate`, request);
+  }
+
+  getClinicalExemplars(query?: string, domain?: string): Observable<ApiResponse<ClinicalExemplarDto[]>> {
+    let params = new HttpParams();
+    if (query) params = params.set('query', query);
+    if (domain) params = params.set('domain', domain);
+    return this.http.get<ApiResponse<ClinicalExemplarDto[]>>(`${this.baseUrl}/ai/exemplars`, { params });
   }
 
   // ==================== PATIENT DOCUMENTS & RAG ====================

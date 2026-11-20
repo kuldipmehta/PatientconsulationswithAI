@@ -21,17 +21,20 @@ public class AiAgentController : ControllerBase
     private readonly IAuditService _auditService;
     private readonly IConfiguration _configuration;
     private readonly ILlmJudgeService _llmJudgeService;
+    private readonly IExemplarMemoryService _exemplarMemoryService;
 
     public AiAgentController(
         IAiPatientAgentService aiAgentService,
         IAuditService auditService,
         IConfiguration configuration,
-        ILlmJudgeService llmJudgeService)
+        ILlmJudgeService llmJudgeService,
+        IExemplarMemoryService exemplarMemoryService)
     {
         _aiAgentService = aiAgentService;
         _auditService = auditService;
         _configuration = configuration;
         _llmJudgeService = llmJudgeService;
+        _exemplarMemoryService = exemplarMemoryService;
     }
 
     [HttpGet("status")]
@@ -169,6 +172,28 @@ public class AiAgentController : ControllerBase
 
         var result = await _llmJudgeService.EvaluateAsync(request, cancellationToken);
         return Ok(ApiResponse<LlmJudgeEvaluationResult>.Ok(result, "LLM Judge evaluation completed successfully."));
+    }
+
+    [HttpGet("exemplars")]
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<ClinicalExemplarDto>>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetExemplars(
+        [FromQuery] string? query,
+        [FromQuery] string? domain,
+        [FromQuery] int topK = 5,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            var all = _exemplarMemoryService.GetAllExemplars();
+            if (!string.IsNullOrWhiteSpace(domain))
+            {
+                all = all.Where(e => string.Equals(e.Domain, domain, StringComparison.OrdinalIgnoreCase)).ToList();
+            }
+            return Ok(ApiResponse<IReadOnlyList<ClinicalExemplarDto>>.Ok(all, "Clinical exemplars retrieved successfully."));
+        }
+
+        var relevant = await _exemplarMemoryService.GetRelevantExemplarsAsync(query, domain, topK, cancellationToken: cancellationToken);
+        return Ok(ApiResponse<IReadOnlyList<ClinicalExemplarDto>>.Ok(relevant, "Relevant clinical exemplars retrieved."));
     }
 
     [HttpGet("usage")]

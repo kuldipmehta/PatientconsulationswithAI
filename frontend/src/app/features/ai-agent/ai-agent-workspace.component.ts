@@ -96,6 +96,13 @@ import {
                 </span>
               </div>
 
+              <div *ngIf="m.injectedExemplars?.length" class="meta-line exemplar-line">
+                <span class="exemplar-title">📚 Dynamic Few-Shot Memory:</span>
+                <span *ngFor="let ex of m.injectedExemplars" class="badge badge-exemplar" title="Dynamically retrieved from Gold-Standard Clinical Exemplar Vector Store">
+                  {{ ex }}
+                </span>
+              </div>
+
               <div *ngIf="m.pharmacovigilanceWarnings?.length" class="pharmacovigilance-card">
                 <div class="pv-title">⚠️ Pharmacovigilance Safety Alerts</div>
                 <ul>
@@ -197,6 +204,9 @@ import {
             </button>
             <button type="button" class="btn-quick-chip" (click)="setQuickPrompt('Arthur Pendelton asks: Can I take Advil or Motrin 600mg for back pain? What is my history of blood pressure and medications?')">
               ⚖️ Test LLM Judge Gate (Warfarin + NSAID)
+            </button>
+            <button type="button" class="btn-quick-chip" (click)="setQuickPrompt('Arthur Pendelton asks: Can I take Advil or Motrin for back pain while on blood thinners? What is the clinical rationale and recommended alternative?')">
+              📚 Test Vector Memory (Few-Shot Retrieval)
             </button>
           </div>
 
@@ -396,6 +406,9 @@ import {
     .swarm-line { align-items: center; margin-top: 0.4rem; }
     .swarm-title { font-weight: 700; color: #1e3a8a; }
     .badge-swarm { background: #dbeafe; color: #1d4ed8; font-weight: 600; padding: 0.15rem 0.45rem; border-radius: 9999px; }
+    .exemplar-line { align-items: center; margin-top: 0.35rem; }
+    .exemplar-title { font-weight: 700; color: #0d9488; }
+    .badge-exemplar { background: #ccfbf1; color: #0f766e; border: 1px solid #99f6e4; font-weight: 600; padding: 0.15rem 0.45rem; border-radius: 9999px; }
     .pharmacovigilance-card { margin-top: 0.75rem; padding: 0.75rem 1rem; border-radius: var(--radius-md); background: #fef2f2; border: 1.5px solid #f87171; color: #991b1b; font-size: 0.82rem; }
     .pv-title { font-weight: 800; font-size: 0.84rem; margin-bottom: 0.35rem; color: #b91c1c; }
     .pharmacovigilance-card ul { margin: 0; padding-left: 1.2rem; }
@@ -523,6 +536,7 @@ export class AiAgentWorkspaceComponent implements OnInit {
           modelMsg.sourceCitations = evt.data.sourceCitations;
           modelMsg.collaboratingAgents = evt.data.collaboratingAgents;
           modelMsg.pharmacovigilanceWarnings = evt.data.pharmacovigilanceWarnings;
+          modelMsg.injectedExemplars = evt.data.injectedExemplars;
           modelMsg.groundingScore = evt.data.groundingScore;
           modelMsg.isGrounded = evt.data.isGrounded;
           modelMsg.wasSelfCorrected = evt.data.wasSelfCorrected;

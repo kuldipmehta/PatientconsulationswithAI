@@ -48,6 +48,7 @@ public class AiChatResponseDto
     public List<AiSourceCitationDto> SourceCitations { get; set; } = new();
     public List<string> CollaboratingAgents { get; set; } = new();
     public List<string> PharmacovigilanceWarnings { get; set; } = new();
+    public List<string> InjectedExemplars { get; set; } = new();
     public double? GroundingScore { get; set; }
     public bool IsGrounded { get; set; } = true;
     public bool WasSelfCorrected { get; set; }

@@ -36,6 +36,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
     private readonly ISemanticCacheService? _semanticCacheService;
     private readonly IClinicalSupervisorOrchestrator? _supervisorOrchestrator;
     private readonly IGroundingVerifierService? _groundingVerifier;
+    private readonly IExemplarMemoryService? _exemplarMemory;
     private readonly string? _configuredApiKey;
     private readonly string _defaultModel;
     private readonly HashSet<string> _allowedModels;
@@ -76,7 +77,8 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         IPatientRagService? ragService = null,
         ISemanticCacheService? semanticCacheService = null,
         IClinicalSupervisorOrchestrator? supervisorOrchestrator = null,
-        IGroundingVerifierService? groundingVerifier = null)
+        IGroundingVerifierService? groundingVerifier = null,
+        IExemplarMemoryService? exemplarMemory = null)
     {
         _httpClient = httpClient;
         _dbContext = dbContext;
@@ -90,6 +92,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         _semanticCacheService = semanticCacheService;
         _supervisorOrchestrator = supervisorOrchestrator;
         _groundingVerifier = groundingVerifier;
+        _exemplarMemory = exemplarMemory;
 
         var rawKey = configuration["Gemini:ApiKey"] ?? Environment.GetEnvironmentVariable("GEMINI_API_KEY");
         _configuredApiKey = string.IsNullOrWhiteSpace(rawKey) || rawKey.Contains("YOUR_GEMINI_API_KEY", StringComparison.OrdinalIgnoreCase)
@@ -584,6 +587,25 @@ public class GeminiPatientAgentService : IAiPatientAgentService
         var chatFeatureOptions = GetFeatureGenerationOptions("Chat", 0.2, 0.9, 2048, "chat.v1");
         var (chatSystemPrompt, chatPromptVersion) = PromptTemplateLoader.Load(chatFeatureOptions.PromptVersion, ClinicalSystemInstruction);
 
+        var injectedExemplars = new List<string>();
+        if (_exemplarMemory != null)
+        {
+            try
+            {
+                var relevant = await _exemplarMemory.GetRelevantExemplarsAsync(request.Message, cancellationToken: cancellationToken);
+                if (relevant.Count > 0)
+                {
+                    injectedExemplars = relevant.Select(e => $"{e.Id}: {e.ScenarioTitle}").ToList();
+                    var exemplarGuidance = _exemplarMemory.FormatFewShotPrompt(relevant);
+                    chatSystemPrompt = $"{exemplarGuidance}\n\n{chatSystemPrompt}";
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to retrieve dynamic few-shot exemplars.");
+            }
+        }
+
         var cacheScope = request.PatientContextId.HasValue ? $"patient:{request.PatientContextId.Value}" : "global";
         if (_semanticCacheService != null)
         {
@@ -752,6 +774,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             SourceCitations = citations,
             CollaboratingAgents = collaboratingAgents,
             PharmacovigilanceWarnings = pharmacovigilanceWarnings,
+            InjectedExemplars = injectedExemplars,
             GroundingScore = groundingScore,
             IsGrounded = isGrounded,
             WasSelfCorrected = wasSelfCorrected,
@@ -791,6 +814,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
                 sourceCitations = simulated.SourceCitations,
                 collaboratingAgents = simulated.CollaboratingAgents,
                 pharmacovigilanceWarnings = simulated.PharmacovigilanceWarnings,
+                injectedExemplars = simulated.InjectedExemplars,
                 groundingScore = simulated.GroundingScore,
                 isGrounded = simulated.IsGrounded,
                 wasSelfCorrected = simulated.WasSelfCorrected
@@ -820,6 +844,7 @@ public class GeminiPatientAgentService : IAiPatientAgentService
             sourceCitations = fullResponse.SourceCitations,
             collaboratingAgents = fullResponse.CollaboratingAgents,
             pharmacovigilanceWarnings = fullResponse.PharmacovigilanceWarnings,
+            injectedExemplars = fullResponse.InjectedExemplars,
             groundingScore = fullResponse.GroundingScore,
             isGrounded = fullResponse.IsGrounded,
             wasSelfCorrected = fullResponse.WasSelfCorrected

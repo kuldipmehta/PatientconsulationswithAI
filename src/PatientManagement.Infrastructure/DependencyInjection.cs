@@ -59,6 +59,9 @@ public static class DependencyInjection
         // LLM-as-a-Judge Evaluation Pipeline & Quality CI Gates
         services.AddSingleton<ILlmJudgeService, LlmJudgeService>();
 
+        // Dynamic Few-Shot Learning via Vector Memory (Exemplar Selection)
+        services.AddSingleton<IExemplarMemoryService, ExemplarMemoryService>();
+
         services.AddHttpClient<ITextEmbeddingService, GeminiTextEmbeddingService>(client =>
         {
             client.Timeout = TimeSpan.FromSeconds(60);
