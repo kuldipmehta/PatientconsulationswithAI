@@ -41,3 +41,14 @@ appsettings.Development.json
 ## OS Files
 .DS_Store
 Thumbs.db
+
+## Python / FastAPI
+**/__pycache__/
+*.py[cod]
+*$py.class
+ai-service/venv/
+**/venv/
+**/.pytest_cache/
+.coverage
+htmlcov/
+ai-service/.env
