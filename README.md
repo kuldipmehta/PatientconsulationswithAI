@@ -66,6 +66,7 @@ flowchart TD
 - **Semantic Caching Layer (`ISemanticCacheService`):** Fast-path in-memory vector cache with cosine similarity matching ($\ge 0.93$) and exact string lookup (`MemorySemanticCacheService`). High-confidence paraphrased queries return in $\sim 10$ ms with **\$0.00 cost** and zero tokens consumed. Cache entries are partitioned strictly by patient (`patient:{id}`) and feature scope to prevent cross-patient data leakage, and automatically invalidated whenever patient consultations or clinical documents are created, updated, or re-indexed.
 - **Multi-Agent Specialist Swarm (`IClinicalSupervisorOrchestrator`, `ISpecialistAgent`):** Overcomes single-agent prompt bloat by decomposing multidisciplinary clinical queries across a coordinated agent swarm: **Clinical Supervisor Agent** classifies clinical domains and plans routing; **Pharmacovigilance Agent** executes deterministic drug-drug interaction audits (Warfarin + NSAID bleeding risks, ACEi + Potassium hyperkalemia, Statin + Macrolide myopathy) and allergy cross-checks; **Diagnostic & Triage Agent** assesses symptom severity, red flags, and Ottawa clinical guidelines; and **Scheduling Specialist Agent** selects matching doctor specialties (e.g. Orthopedics vs Cardiology) and crafts human-in-the-loop proposals. Cross-agent safety reconciliation automatically modifies appointment diagnoses if dangerous contraindications are flagged.
 - **Clinical Grounding Verifier & Self-Correction Loop (`IGroundingVerifierService`, `ClinicalGroundingVerifierService`):** Eliminates hallucinated lab metrics, unrecorded medication claims, and allergy negation contradictions. Decomposes generated clinical narratives into individual factual assertions and verifies each against source clinical consultations and indexed documents. If ungrounded or contradicted claims are identified (or grounding score $< 0.85$), an automated single-turn self-correction loop transmits targeted factual critiques to the model to excise unverified speculation before clinical review, surfacing real-time telemetry (`🛡️ 100% Grounded`, `⚡ Self-Corrected`) across SSE chat and de-identified live summary views.
+- **LLM-as-a-Judge Evaluation Pipeline & Quality CI Gates (`ILlmJudgeService`, `LlmJudgeService`):** Implements automated clinical quality gating across 4 standardized evaluation dimensions: **Faithfulness & Groundedness** ($\ge 4.0/5.0$), **Answer Relevance** ($\ge 4.0/5.0$), **Clinical Safety & Harm Avoidance** (Strict $5.0/5.0$), and **PII & Privacy Shield** (Strict $5.0/5.0$). Employs Chain-of-Thought (CoT) clinical rubric grading with live LLM execution via `ILlmClient` and calibrated deterministic offline evaluation gates (`POST /api/ai/evaluate`). Prevents model drift or prompt regressions from deploying to production and exposes interactive audit scorecards with visual metric progress bars directly in the Angular workspace.
 
 ### 3. Resilience & Scheduling Reliability
 - **Polly Standard Resilience:** `AddStandardResilienceHandler` wraps outbound Gemini calls with exponential backoff retries, timeouts, and circuit breaking.
@@ -129,7 +130,7 @@ Tested 10 clinical summary cases (`SUM-24`..`SUM-33`) × 3 runs each at temperat
 │   ├── PatientManagement.Infrastructure/  # EF Core 10, Migrations, Auth, AI Safety, Blob & Email Services
 │   └── PatientManagement.Api/             # .NET 10 Controllers, JWT/CORS/RateLimit Middleware, Health Checks
 ├── tests/
-│   └── PatientManagement.Tests/           # 139 xUnit Tests (Unit, Integration, RBAC, Concurrency, Mocked AI, Multi-Agent Swarm, Two-Stage RAG, Semantic Caching, Grounding Verifier, Structured Output, Prompt Versioning & Multi-Model Eval Suite)
+│   └── PatientManagement.Tests/           # 146 xUnit Tests (Unit, Integration, RBAC, Concurrency, Mocked AI, Multi-Agent Swarm, Two-Stage RAG, Semantic Caching, Grounding Verifier, LLM-as-a-Judge Pipeline, Structured Output, Prompt Versioning & Multi-Model Eval Suite)
 ├── prompts/                               # Versioned system prompts (summary.v1/v2, triage.v1, chat.v1)
 ├── docs/                                  # Evaluation reports (model-comparison.md, summary-temperature-experiment.md)
 ├── frontend/                              # Angular 19 Standalone SPA (Lazy-Loaded Features + Karma Specs)
@@ -209,7 +210,7 @@ Passwords are read from `Seed:AdminPassword`, `Seed:DoctorPassword`, and `Seed:R
 
 ## Testing & Verification
 
-### Backend (.NET 10 — 139 Automated Tests)
+### Backend (.NET 10 — 146 Automated Tests)
 Includes unit tests, InMemory API integration tests (`WebApplicationFactory<Program>`), RBAC & IDOR scoping checks (`401`/`403`), concurrency & double-booking (`409`), upload magic-byte rejection (`400`), Swagger OpenAPI verification, mocked HTTP Gemini tool-calling, token/cost/usage aggregation, structured JSON retry/fallback, prompt versioning, semantic vector caching & scope invalidation, two-stage RAG cross-encoder reranking & context compression, multi-agent specialist swarm orchestration, `ILlmClient` (Gemini + Ollama), and a **28-case + multi-model offline AI evaluation suite** (`tests/PatientManagement.Tests/Evaluation/`):
 
 ```bash

@@ -17,6 +17,8 @@ import {
   DoctorAvailability,
   EmailAuditLog,
   LivePatientSummary,
+  LlmJudgeEvaluationRequest,
+  LlmJudgeEvaluationResult,
   PagedResult,
   PatientDetail,
   PatientDocumentDto,
@@ -277,6 +279,10 @@ export class ApiService {
       },
       { params }
     );
+  }
+
+  evaluateAiResponse(request: LlmJudgeEvaluationRequest): Observable<ApiResponse<LlmJudgeEvaluationResult>> {
+    return this.http.post<ApiResponse<LlmJudgeEvaluationResult>>(`${this.baseUrl}/ai/evaluate`, request);
   }
 
   // ==================== PATIENT DOCUMENTS & RAG ====================

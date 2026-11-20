@@ -127,6 +127,46 @@ import {
                 </span>
               </div>
 
+              <!-- LLM-as-a-Judge Audit Action & Scorecard -->
+              <div class="judge-action-row" *ngIf="m.role === 'model' && m.content">
+                <button type="button" class="btn-judge-pill" (click)="runJudgeAudit(m)" [disabled]="m.judgeLoading">
+                  {{ m.judgeLoading ? '⚖️ Evaluating Rubrics...' : (m.judgeResult ? '⚖️ Re-Run LLM Judge Audit' : '⚖️ Audit with LLM Judge') }}
+                </button>
+              </div>
+
+              <div *ngIf="m.judgeResult as j" class="judge-scorecard" [class.judge-passed]="j.passed" [class.judge-failed]="!j.passed">
+                <div class="judge-header">
+                  <div class="judge-title">
+                    <span class="judge-icon">{{ j.passed ? '🛡️' : '⚠️' }}</span>
+                    <strong>LLM Judge Quality Gate:</strong>
+                    <span class="badge" [class.badge-grounded]="j.passed" [class.badge-danger]="!j.passed">
+                      {{ j.passed ? 'PASSED (Production Ready)' : 'REGRESSION BLOCKED' }}
+                    </span>
+                  </div>
+                  <div class="judge-score">
+                    Score: <strong>{{ j.overallScore.toFixed(1) }}</strong> / 5.0
+                  </div>
+                </div>
+
+                <div class="judge-metrics-grid">
+                  <div *ngFor="let met of j.metrics" class="judge-metric-card" [class.metric-pass]="met.passed" [class.metric-fail]="!met.passed">
+                    <div class="metric-top">
+                      <span class="metric-name">{{ met.metricName }}</span>
+                      <span class="metric-score-tag">{{ met.score.toFixed(1) }} / 5.0</span>
+                    </div>
+                    <div class="metric-progress-bg">
+                      <div class="metric-progress-bar" [style.width.%]="(met.score / 5) * 100" [class.bar-pass]="met.passed" [class.bar-fail]="!met.passed"></div>
+                    </div>
+                    <div class="metric-expl">{{ met.explanation }}</div>
+                  </div>
+                </div>
+
+                <details class="judge-cot-details">
+                  <summary>View Chain-of-Thought Rubric Critique</summary>
+                  <pre class="judge-cot-text">{{ j.chainOfThoughtCritique }}</pre>
+                </details>
+              </div>
+
               <!-- Human-in-the-loop Confirmation Card -->
               <div *ngFor="let act of m.pendingActions" class="proposal-card">
                 <div class="proposal-title">Proposed Action Requires Confirmation</div>
@@ -154,6 +194,9 @@ import {
             </button>
             <button type="button" class="btn-quick-chip" (click)="setQuickPrompt('What are patient Arthur Pendelton current medications, documented allergies, and most recent clinical consultation findings?')">
               🛡️ Test Grounding Verifier
+            </button>
+            <button type="button" class="btn-quick-chip" (click)="setQuickPrompt('Arthur Pendelton asks: Can I take Advil or Motrin 600mg for back pain? What is my history of blood pressure and medications?')">
+              ⚖️ Test LLM Judge Gate (Warfarin + NSAID)
             </button>
           </div>
 
@@ -229,6 +272,46 @@ import {
               <summary>Verify PII-Minimized Payload Sent to AI Engine (Names, Emails, Phones & Addresses Stripped)</summary>
               <pre>{{ s.sanitizedClinicalDataUsed | json }}</pre>
             </details>
+
+            <!-- Live Summary LLM Judge Quality Gate -->
+            <div class="summary-judge-row">
+              <button type="button" class="btn-judge-pill" (click)="runJudgeAuditOnSummary(s)" [disabled]="s.judgeLoading">
+                {{ s.judgeLoading ? '⚖️ Evaluating Rubrics...' : (s.judgeResult ? '⚖️ Re-Run LLM Judge Audit on Summary' : '⚖️ Audit Summary with LLM Judge') }}
+              </button>
+            </div>
+
+            <div *ngIf="s.judgeResult as j" class="judge-scorecard" [class.judge-passed]="j.passed" [class.judge-failed]="!j.passed">
+              <div class="judge-header">
+                <div class="judge-title">
+                  <span class="judge-icon">{{ j.passed ? '🛡️' : '⚠️' }}</span>
+                  <strong>LLM Judge Quality Gate:</strong>
+                  <span class="badge" [class.badge-grounded]="j.passed" [class.badge-danger]="!j.passed">
+                    {{ j.passed ? 'PASSED (Production Ready)' : 'REGRESSION BLOCKED' }}
+                  </span>
+                </div>
+                <div class="judge-score">
+                  Score: <strong>{{ j.overallScore.toFixed(1) }}</strong> / 5.0
+                </div>
+              </div>
+
+              <div class="judge-metrics-grid">
+                <div *ngFor="let met of j.metrics" class="judge-metric-card" [class.metric-pass]="met.passed" [class.metric-fail]="!met.passed">
+                  <div class="metric-top">
+                    <span class="metric-name">{{ met.metricName }}</span>
+                    <span class="metric-score-tag">{{ met.score.toFixed(1) }} / 5.0</span>
+                  </div>
+                  <div class="metric-progress-bg">
+                    <div class="metric-progress-bar" [style.width.%]="(met.score / 5) * 100" [class.bar-pass]="met.passed" [class.bar-fail]="!met.passed"></div>
+                  </div>
+                  <div class="metric-expl">{{ met.explanation }}</div>
+                </div>
+              </div>
+
+              <details class="judge-cot-details">
+                <summary>View Chain-of-Thought Rubric Critique</summary>
+                <pre class="judge-cot-text">{{ j.chainOfThoughtCritique }}</pre>
+              </details>
+            </div>
           </div>
         </div>
 
@@ -331,6 +414,32 @@ import {
     .badge-grounded { background: #dcfce7; color: #15803d; border: 1px solid #86efac; font-weight: 600; }
     .badge-self-corrected { background: #fef08a; color: #854d0e; border: 1px solid #facc15; font-weight: 600; }
     .badge-grounding-warning { background: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5; font-weight: 600; }
+    .btn-judge-pill { background: #fdf4ff; border: 1px solid #f0abfc; color: #a21caf; border-radius: 9999px; padding: 0.2rem 0.65rem; font-size: 0.76rem; font-weight: 600; cursor: pointer; transition: all 0.15s ease; margin-top: 0.4rem; }
+    .btn-judge-pill:hover:not(:disabled) { background: #fae8ff; border-color: #e879f9; transform: translateY(-1px); }
+    .btn-judge-pill:disabled { opacity: 0.6; cursor: not-allowed; }
+    .judge-action-row { margin-top: 0.4rem; }
+    .summary-judge-row { margin-top: 1rem; margin-bottom: 0.5rem; }
+    .judge-scorecard { margin-top: 0.75rem; border-radius: var(--radius-md); padding: 0.85rem 1rem; border: 1.5px solid var(--border); background: white; font-size: 0.82rem; }
+    .judge-scorecard.judge-passed { border-color: #86efac; background: #f0fdf4; }
+    .judge-scorecard.judge-failed { border-color: #fca5a5; background: #fef2f2; }
+    .judge-header { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; flex-wrap: wrap; }
+    .judge-title { display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; }
+    .judge-icon { font-size: 1rem; }
+    .judge-score { font-size: 0.85rem; color: #374151; }
+    .judge-metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.6rem; margin-bottom: 0.6rem; }
+    .judge-metric-card { background: white; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.5rem 0.65rem; }
+    .judge-metric-card.metric-pass { border-color: #bbf7d0; }
+    .judge-metric-card.metric-fail { border-color: #fecaca; background: #fff5f5; }
+    .metric-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem; font-weight: 600; font-size: 0.78rem; }
+    .metric-score-tag { font-size: 0.75rem; color: #4b5563; }
+    .metric-progress-bg { height: 5px; background: #e5e7eb; border-radius: 9999px; overflow: hidden; margin-bottom: 0.35rem; }
+    .metric-progress-bar { height: 100%; border-radius: 9999px; transition: width 0.3s ease; }
+    .metric-progress-bar.bar-pass { background: #22c55e; }
+    .metric-progress-bar.bar-fail { background: #ef4444; }
+    .metric-expl { font-size: 0.72rem; color: #4b5563; line-height: 1.25; }
+    .judge-cot-details { font-size: 0.78rem; margin-top: 0.5rem; }
+    .judge-cot-details summary { cursor: pointer; color: #6b21a8; font-weight: 600; }
+    .judge-cot-text { background: white; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.5rem 0.75rem; font-size: 0.74rem; white-space: pre-wrap; margin-top: 0.35rem; color: #374151; max-height: 160px; overflow-y: auto; }
     .summary-body { margin-bottom: 1rem; }
     .summary-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
     .summary-cols ul { padding-left: 1.25rem; font-size: 0.88rem; }
@@ -486,6 +595,56 @@ export class AiAgentWorkspaceComponent implements OnInit {
       },
       error: err => {
         this.triageLoading.set(false);
+        this.errorMessage.set(extractApiErrorMessage(err));
+      }
+    });
+  }
+
+  runJudgeAudit(msg: AiChatMessage, queryContext?: string): void {
+    if (!msg.content || msg.judgeLoading) return;
+    msg.judgeLoading = true;
+
+    const sourceContext = msg.sourceCitations?.map(c => c.clinicalSnippet).filter(Boolean).join('\n---\n')
+      || (this.selectedPatientId ? `Active patient ID #${this.selectedPatientId}` : 'Clinical Consultation Record');
+
+    const query = queryContext || 'Clinical inquiry review and verification';
+
+    this.api.evaluateAiResponse({
+      query,
+      sourceContext,
+      generatedResponse: msg.content
+    }).subscribe({
+      next: res => {
+        msg.judgeResult = res.data;
+        msg.judgeLoading = false;
+        this.messages.update(list => [...list]);
+      },
+      error: err => {
+        msg.judgeLoading = false;
+        this.errorMessage.set(extractApiErrorMessage(err));
+      }
+    });
+  }
+
+  runJudgeAuditOnSummary(summary: LivePatientSummary): void {
+    if (!summary.aiGeneratedSummary || summary.judgeLoading) return;
+    summary.judgeLoading = true;
+
+    const source = summary.sourceCitations?.map(c => c.clinicalSnippet).filter(Boolean).join('\n---\n')
+      || JSON.stringify(summary.sanitizedClinicalDataUsed || {});
+
+    this.api.evaluateAiResponse({
+      query: `Generate de-identified clinical summary for ${summary.patientLabel}`,
+      sourceContext: source,
+      generatedResponse: summary.aiGeneratedSummary
+    }).subscribe({
+      next: res => {
+        summary.judgeResult = res.data;
+        summary.judgeLoading = false;
+        this.liveSummary.set({ ...summary });
+      },
+      error: err => {
+        summary.judgeLoading = false;
         this.errorMessage.set(extractApiErrorMessage(err));
       }
     });

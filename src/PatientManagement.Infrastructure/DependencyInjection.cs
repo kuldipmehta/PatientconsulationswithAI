@@ -56,6 +56,9 @@ public static class DependencyInjection
         // Grounding Verification & Hallucination Detection
         services.AddSingleton<IGroundingVerifierService, ClinicalGroundingVerifierService>();
 
+        // LLM-as-a-Judge Evaluation Pipeline & Quality CI Gates
+        services.AddSingleton<ILlmJudgeService, LlmJudgeService>();
+
         services.AddHttpClient<ITextEmbeddingService, GeminiTextEmbeddingService>(client =>
         {
             client.Timeout = TimeSpan.FromSeconds(60);

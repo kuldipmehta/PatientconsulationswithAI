@@ -334,6 +334,8 @@ export interface LivePatientSummary {
   isGrounded?: boolean;
   wasSelfCorrected?: boolean;
   verifiedClaims?: ClinicalClaimVerification[];
+  judgeResult?: LlmJudgeEvaluationResult;
+  judgeLoading?: boolean;
   isSimulatedMode: boolean;
   simulatedModeNotice?: string | null;
   disclaimer: string;
@@ -353,6 +355,8 @@ export interface AiChatMessage {
   isGrounded?: boolean;
   wasSelfCorrected?: boolean;
   verifiedClaims?: ClinicalClaimVerification[];
+  judgeResult?: LlmJudgeEvaluationResult;
+  judgeLoading?: boolean;
   isSimulatedMode?: boolean;
   simulatedModeNotice?: string | null;
   emergencyRuleTriggered?: boolean;
@@ -392,4 +396,27 @@ export interface AiTriageResponse {
   simulatedModeNotice?: string | null;
   disclaimer: string;
   analyzedAtUtc: string;
+}
+
+export interface LlmJudgeMetricScore {
+  metricName: string;
+  score: number;
+  minPassingScore: number;
+  explanation: string;
+  passed: boolean;
+}
+
+export interface LlmJudgeEvaluationRequest {
+  query: string;
+  sourceContext: string;
+  generatedResponse: string;
+  featureScope?: string | null;
+}
+
+export interface LlmJudgeEvaluationResult {
+  overallScore: number;
+  passed: boolean;
+  metrics: LlmJudgeMetricScore[];
+  chainOfThoughtCritique: string;
+  evaluatedAtUtc: string;
 }

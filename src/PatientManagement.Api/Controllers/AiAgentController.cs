@@ -20,15 +20,18 @@ public class AiAgentController : ControllerBase
     private readonly IAiPatientAgentService _aiAgentService;
     private readonly IAuditService _auditService;
     private readonly IConfiguration _configuration;
+    private readonly ILlmJudgeService _llmJudgeService;
 
     public AiAgentController(
         IAiPatientAgentService aiAgentService,
         IAuditService auditService,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        ILlmJudgeService llmJudgeService)
     {
         _aiAgentService = aiAgentService;
         _auditService = auditService;
         _configuration = configuration;
+        _llmJudgeService = llmJudgeService;
     }
 
     [HttpGet("status")]
@@ -150,6 +153,22 @@ public class AiAgentController : ControllerBase
     {
         var triageResult = await _aiAgentService.TriageSymptomsAsync(request, model, cancellationToken);
         return Ok(ApiResponse<AiTriageResponseDto>.Ok(triageResult, "Symptom triage completed"));
+    }
+
+    [HttpPost("evaluate")]
+    [ProducesResponseType(typeof(ApiResponse<LlmJudgeEvaluationResult>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> Evaluate(
+        [FromBody] LlmJudgeEvaluationRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request == null || string.IsNullOrWhiteSpace(request.GeneratedResponse))
+        {
+            return BadRequest(ApiResponse<object>.Fail("Evaluation request must include GeneratedResponse."));
+        }
+
+        var result = await _llmJudgeService.EvaluateAsync(request, cancellationToken);
+        return Ok(ApiResponse<LlmJudgeEvaluationResult>.Ok(result, "LLM Judge evaluation completed successfully."));
     }
 
     [HttpGet("usage")]
