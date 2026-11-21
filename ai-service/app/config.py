@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     ]
 
     # Service Security
-    AI_SERVICE_API_KEY: str = "dev-caresync-ai-secret-key-123"
+    AI_SERVICE_API_KEY: str = "dev-caresync-ai-secret-key-super-secure-change-in-prod-2026"
 
     # LLM Settings
     GEMINI_API_KEY: str = ""

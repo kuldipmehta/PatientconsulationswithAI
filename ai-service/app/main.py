@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import logging
+import time
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -20,6 +21,9 @@ async def lifespan(app: FastAPI):
     """Application lifespan context manager for startup and shutdown hooks."""
     settings = get_settings()
     logger.info("Initializing CareSync AI Microservice [%s]...", settings.ENVIRONMENT)
+
+    # Initialize server start time for engine metrics
+    app.state.start_time = time.time()
 
     # Initialize shared HTTP client pool for outbound AI calls
     app.state.http_client = httpx.AsyncClient(timeout=httpx.Timeout(60.0))
