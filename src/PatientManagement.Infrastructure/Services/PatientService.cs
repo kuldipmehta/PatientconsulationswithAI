@@ -208,7 +208,7 @@ public class PatientService : IPatientService
         {
             // Never email passwords/credentials — send a one-time onboarding link notification
             var setupTokenHint = Guid.NewGuid().ToString("N")[..12];
-            var setupLink = $"https://portal.patientmanagement.local/set-password?invite={setupTokenHint}";
+            var setupLink = $"https://portal.patientmanagement.local/set-password?token={setupTokenHint}";
             await _emailService.SendPatientWelcomeEmailAsync(patient, setupLink, cancellationToken);
         }
         catch (Exception ex)
